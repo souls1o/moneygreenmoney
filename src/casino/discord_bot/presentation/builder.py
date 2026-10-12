@@ -231,7 +231,8 @@ class EmbedBuilder:
         parts: list[str] = []
         if self._title:
             # Discord treats trailing " #" in headings as markup, which would hide "#1".
-            parts.append(f"## {self._title.replace('#', '\u2060#')}")
+            title = self._title.replace("#", "\u2060#")
+            parts.append(f"## {title}")
         if self._description:
             parts.append(self._description)
         return "\n\n".join(parts)
