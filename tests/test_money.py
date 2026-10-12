@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from casino.utils.money import MathService, SolAmount
+from casino.utils.money import MathService, SolAmount, subtract_transfer_fee, transfer_fee
 
 
 class TestMathService:
@@ -59,6 +59,12 @@ class TestMathService:
         math = MathService(600)
         assert math.format_fiat_symbol(Decimal("10"), "USD") == "$10.00"
         assert math.format_fiat_symbol(Decimal("10"), "EUR") == "€10.00"
+
+
+def test_transfer_fee_is_one_percent() -> None:
+    amount = SolAmount.from_lamports(1_000_000_000)
+    assert transfer_fee(amount).lamports == 10_000_000
+    assert subtract_transfer_fee(amount).lamports == 990_000_000
 
 
 def test_admin_ledger_amounts_use_signed_usd() -> None:

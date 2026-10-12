@@ -84,7 +84,7 @@ class EmbedFactory:
             self.builder(
                 "Deposit",
                 description=(
-                    "Send **native SOL** to your personal deposit address. It stays the same for you. A **1%** deposit fee will be deducted from your deposit."
+                    "Send **native SOL** to your personal deposit address. It stays the same for you. A **1%** deposit fee is credited to the house book."
                 ),
             )
             .field("Deposit Address", f"`{address}`")
@@ -216,8 +216,8 @@ class EmbedFactory:
         target = game.first_to or 1
         if target > 1:
             description = (
-                f"Flip **{flip_index + 1}**"
-                f"{self._coinflip_score_line(game, through=flip_index)} "
+                f"Flip **{flip_index + 1}**\n"
+                f"{self._coinflip_score_line(game, through=flip_index)}\n"
                 f"Flipping in **{seconds}**..."
             )
         else:
@@ -615,7 +615,7 @@ class EmbedFactory:
                 "House deposit",
                 description=(
                     "Send **native SOL** to the house deposit address. "
-                    "A **1%** deposit fee will be deducted before house reserves are credited."
+                    "The full amount is credited to house reserves — no deposit fee."
                 ),
             )
             .field("Deposit Address", f"`{address}`")
@@ -637,7 +637,7 @@ class EmbedFactory:
                 "Wallet",
                 (
                     "Use `/balance` to deposit native SOL to your personal address, then withdraw from there. "
-                    "Deposits and withdrawals take a **1%** transfer fee. "
+                    "Player deposits and withdrawals take a **1%** transfer fee credited to the house book. "
                     "`/settings` sets your currency."
                 ),
             )

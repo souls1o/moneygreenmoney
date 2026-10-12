@@ -50,16 +50,16 @@ def _service(*, house_lamports: int = 2_000_000_000):
 
 
 @pytest.mark.asyncio
-async def test_house_withdraw_debits_gross_and_sends_net() -> None:
+async def test_house_withdraw_debits_and_sends_full_amount() -> None:
     service, house_repo, ledger_repo, rpc, tx_repo = _service()
     amount = SolAmount.from_lamports(1_000_000_000)
 
     result = await service.withdraw_house(amount, DESTINATION, "admin-1")
 
     assert result.destination == DESTINATION
-    assert result.amount.lamports == 990_000_000
+    assert result.amount.lamports == 1_000_000_000
     assert result.signature == "withdraw-sig"
-    assert rpc.sent == [(DESTINATION, 990_000_000)]
+    assert rpc.sent == [(DESTINATION, 1_000_000_000)]
     assert house_repo.record.sol_balance_lamports == 1_000_000_000
     entry = next(item for item in ledger_repo.entries if item.type is LedgerEntryType.WITHDRAWAL)
     assert entry.amount_lamports == -amount.lamports

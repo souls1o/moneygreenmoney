@@ -82,7 +82,7 @@ def _service(users_repo=None, house_repo=None, tx_repo=None, ledger_repo=None):
 
 @pytest.mark.asyncio
 async def test_deposit_is_idempotent_on_signature() -> None:
-    service, users_repo, _house, ledger_repo, _rpc, clock = _service()
+    service, users_repo, house_repo, ledger_repo, _rpc, clock = _service()
     user = UserRecord(
         discord_id="1",
         deposit_memo="BBTEST",
@@ -103,8 +103,13 @@ async def test_deposit_is_idempotent_on_signature() -> None:
     with pytest.raises(AlreadyProcessedError):
         await service.credit_parsed(user, parsed)
     assert users_repo.users["1"].sol_balance_lamports == 990_000_000
+    assert house_repo.record.sol_balance_lamports == 10_000_000
+    assert house_repo.record.total_fees_collected_lamports == 0
     deposits = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.DEPOSIT]
     assert len(deposits) == 1
+    fees = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.FEE]
+    assert len(fees) == 1
+    assert fees[0].amount_lamports == 10_000_000
 
 
 @pytest.mark.asyncio
@@ -119,10 +124,10 @@ async def test_house_deposit_credits_reserves() -> None:
     )
     await service.credit_house(parsed)
     await service.credit_house(parsed)
-    assert house_repo.record.sol_balance_lamports == 1_980_000_000
+    assert house_repo.record.sol_balance_lamports == 2_000_000_000
     deposits = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.DEPOSIT]
     assert len(deposits) == 1
-    assert deposits[0].amount_lamports == 1_980_000_000
+    assert deposits[0].amount_lamports == 2_000_000_000
 
 
 @pytest.mark.asyncio

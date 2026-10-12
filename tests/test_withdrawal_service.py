@@ -80,7 +80,7 @@ def _service(*, enabled: bool = True):
         tx_repo,
         NullUnitOfWorkFactory(),
     )
-    return service, users_repo, ledger_repo, tx_repo, rpc, clock
+    return service, users_repo, ledger_repo, tx_repo, rpc, clock, house_repo
 
 
 def _user(users_repo: MemoryUserRepository, clock: FrozenClock, *, lamports: int = 1_000_000_000) -> UserRecord:
@@ -113,7 +113,7 @@ def _seed_ledger(ledger_repo: MemoryLedgerRepository, clock: FrozenClock, *, lam
 
 @pytest.mark.asyncio
 async def test_withdrawal_disabled_raises() -> None:
-    service, users_repo, _ledger, _tx, _rpc, clock = _service(enabled=False)
+    service, users_repo, _ledger, _tx, _rpc, clock, _house = _service(enabled=False)
     _user(users_repo, clock)
     with pytest.raises(FeatureDisabledError):
         await service.request("1", SolAmount.parse("0.1"), DESTINATION)
@@ -121,7 +121,7 @@ async def test_withdrawal_disabled_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_withdrawal_requires_wallet() -> None:
-    service, users_repo, _ledger, _tx, _rpc, clock = _service()
+    service, users_repo, _ledger, _tx, _rpc, clock, _house = _service()
     _user(users_repo, clock)
     with pytest.raises(ValidationError, match="destination wallet"):
         await service.request("1", SolAmount.parse("0.1"), "")
@@ -129,7 +129,7 @@ async def test_withdrawal_requires_wallet() -> None:
 
 @pytest.mark.asyncio
 async def test_withdrawal_sends_from_super_and_debits() -> None:
-    service, users_repo, ledger_repo, tx_repo, rpc, clock = _service()
+    service, users_repo, ledger_repo, tx_repo, rpc, clock, house_repo = _service()
     _user(users_repo, clock)
     _seed_ledger(ledger_repo, clock, lamports=1_000_000_000)
     seen: list[tuple[str, str]] = []
@@ -146,8 +146,13 @@ async def test_withdrawal_sends_from_super_and_debits() -> None:
     assert users_repo.users["1"].total_withdrawn_lamports == 250_000_000
     assert rpc.sent == [(DESTINATION, 247_500_000)]
     assert seen == [("1", "withdraw-sig")]
+    assert house_repo.record.sol_balance_lamports == 2_500_000
+    assert house_repo.record.total_fees_collected_lamports == 0
     withdrawals = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.WITHDRAWAL]
     assert len(withdrawals) == 1
+    fees = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.FEE]
+    assert len(fees) == 1
+    assert fees[0].amount_lamports == 2_500_000
     stored = await tx_repo.find_by_id(next(iter(tx_repo.items)))
     assert stored is not None
     assert stored.solana_tx_signature == "withdraw-sig"
@@ -155,20 +160,21 @@ async def test_withdrawal_sends_from_super_and_debits() -> None:
 
 @pytest.mark.asyncio
 async def test_withdrawal_refunds_when_send_fails() -> None:
-    service, users_repo, ledger_repo, _tx, rpc, clock = _service()
+    service, users_repo, ledger_repo, _tx, rpc, clock, house_repo = _service()
     _user(users_repo, clock)
     _seed_ledger(ledger_repo, clock, lamports=1_000_000_000)
     rpc.fail = True
     with pytest.raises(WithdrawalError, match="refunded"):
         await service.request("1", SolAmount.parse("0.25"), DESTINATION)
     assert users_repo.users["1"].sol_balance_lamports == 1_000_000_000
+    assert house_repo.record.sol_balance_lamports == 0
     refunds = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.REFUND]
     assert len(refunds) == 1
 
 
 @pytest.mark.asyncio
 async def test_withdrawal_rejects_more_than_balance() -> None:
-    service, users_repo, ledger_repo, _tx, _rpc, clock = _service()
+    service, users_repo, ledger_repo, _tx, _rpc, clock, _house = _service()
     _user(users_repo, clock, lamports=100)
     _seed_ledger(ledger_repo, clock, lamports=1_000_000_000)
     with pytest.raises(InsufficientBalanceError):
@@ -177,7 +183,7 @@ async def test_withdrawal_rejects_more_than_balance() -> None:
 
 @pytest.mark.asyncio
 async def test_withdrawal_rejects_when_super_wallet_is_short() -> None:
-    service, users_repo, ledger_repo, _tx, rpc, clock = _service()
+    service, users_repo, ledger_repo, _tx, rpc, clock, _house = _service()
     _user(users_repo, clock)
     _seed_ledger(ledger_repo, clock, lamports=1_000_000_000)
     rpc.balance = SWEEP_FEE_LAMPORTS + RENT_EXEMPT_FALLBACK_LAMPORTS
@@ -188,7 +194,7 @@ async def test_withdrawal_rejects_when_super_wallet_is_short() -> None:
 
 @pytest.mark.asyncio
 async def test_withdrawal_keeps_super_wallet_rent_exempt() -> None:
-    service, users_repo, ledger_repo, _tx, rpc, clock = _service()
+    service, users_repo, ledger_repo, _tx, rpc, clock, _house = _service()
     _user(users_repo, clock)
     _seed_ledger(ledger_repo, clock, lamports=1_000_000_000)
     amount = SolAmount.parse("0.04533")
@@ -201,7 +207,7 @@ async def test_withdrawal_keeps_super_wallet_rent_exempt() -> None:
 
 @pytest.mark.asyncio
 async def test_withdrawal_rejects_more_than_ledger_total() -> None:
-    service, users_repo, ledger_repo, _tx, rpc, clock = _service()
+    service, users_repo, ledger_repo, _tx, rpc, clock, _house = _service()
     _user(users_repo, clock, lamports=1_000_000_000)
     _seed_ledger(ledger_repo, clock, lamports=100_000_000)
     with pytest.raises(WithdrawalError, match="ledger balance"):

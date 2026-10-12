@@ -71,9 +71,12 @@ class SolAmount:
         return self.lamports == 0
 
 
+def transfer_fee(amount: SolAmount) -> SolAmount:
+    return SolAmount((amount.lamports * TRANSFER_FEE_BPS) // 10_000)
+
+
 def subtract_transfer_fee(amount: SolAmount) -> SolAmount:
-    fee_lamports = (amount.lamports * TRANSFER_FEE_BPS) // 10_000
-    return SolAmount(amount.lamports - fee_lamports)
+    return SolAmount(amount.lamports - transfer_fee(amount).lamports)
 
 
 @dataclass(frozen=True, slots=True)

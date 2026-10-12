@@ -15,7 +15,7 @@ from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.solana_client.addresses import SolanaAddressValidator
 from casino.solana_client.rpc import SWEEP_FEE_LAMPORTS, SolanaRpcGateway
-from casino.utils.money import SolAmount, subtract_transfer_fee
+from casino.utils.money import SolAmount
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,13 +142,9 @@ class AdminService:
         if wallet == self._rpc.super_address:
             raise ValidationError("Choose a different destination wallet.")
 
-        payout = subtract_transfer_fee(amount)
-        if payout.is_zero():
-            raise ValidationError("Enter a withdrawal amount greater than zero.")
-
         super_balance = await self._rpc.get_balance(self._rpc.super_address)
         rent = await self._rpc.get_rent_exempt_lamports()
-        needed = payout.lamports + SWEEP_FEE_LAMPORTS + rent
+        needed = amount.lamports + SWEEP_FEE_LAMPORTS + rent
         if super_balance < needed:
             raise WithdrawalError(
                 "The super wallet does not have enough on-chain SOL to pay this house withdrawal right now."
@@ -170,12 +166,12 @@ class AdminService:
             raise WithdrawalError("The house book does not have enough SOL for this withdrawal.") from exc
 
         try:
-            signature = await self._rpc.send_from_super(wallet, payout)
+            signature = await self._rpc.send_from_super(wallet, amount)
         except Exception as exc:
             self._logger.exception(
                 "house_withdrawal_send_failed",
                 destination=wallet,
-                amountLamports=payout.lamports,
+                amountLamports=amount.lamports,
                 actorId=actor_id,
                 error=str(exc),
             )
@@ -190,12 +186,12 @@ class AdminService:
         self._logger.info(
             "house_withdrawal_sent",
             actorId=actor_id,
-            amountLamports=payout.lamports,
+            amountLamports=amount.lamports,
             destination=wallet,
             txSignature=signature,
             userId=HOUSE_USER_ID,
         )
-        return HouseWithdrawalResult(amount=payout, destination=wallet, signature=signature)
+        return HouseWithdrawalResult(amount=amount, destination=wallet, signature=signature)
 
     async def _refund_house(self, amount: SolAmount, usd_price, wallet: str, actor_id: str) -> None:
         try:

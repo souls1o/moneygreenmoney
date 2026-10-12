@@ -15,7 +15,7 @@ from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.solana_client.addresses import SolanaAddressValidator
 from casino.solana_client.rpc import SWEEP_FEE_LAMPORTS, SolanaRpcGateway
-from casino.utils.money import SolAmount, subtract_transfer_fee
+from casino.utils.money import SolAmount, subtract_transfer_fee, transfer_fee
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +115,24 @@ class WithdrawalService:
                 )
                 await self._refund(discord_id, amount, usd_price, wallet)
                 raise WithdrawalError(_user_send_error(exc)) from exc
+            fee = transfer_fee(amount)
+            if not fee.is_zero():
+                try:
+                    async with self._uow.begin() as uow:
+                        await self._balances.credit_house_reserve(
+                            amount=fee,
+                            entry_type=LedgerEntryType.FEE,
+                            transaction_type=TransactionType.FEE,
+                            price_usd=usd_price,
+                            description="Withdrawal transfer fee",
+                            session=uow.session,
+                        )
+                except Exception:
+                    self._logger.exception(
+                        "withdrawal_fee_credit_failed",
+                        amountLamports=fee.lamports,
+                        txSignature=signature,
+                    )
             try:
                 await self._transactions.attach_signature(mutation.transaction.transaction_id, signature)
             except Exception:
