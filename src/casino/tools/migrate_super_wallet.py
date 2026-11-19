@@ -9,6 +9,7 @@ from pathlib import Path
 from casino.config.settings import Settings
 from casino.container import ContainerFactory
 from casino.db.mongo import COLLECTION_GAMES
+from casino.domain.enums import LedgerEntryType, TransactionType
 from casino.solana_client.keys import KeypairLoader
 from casino.solana_client.rpc import RENT_EXEMPT_FALLBACK_LAMPORTS, SWEEP_FEE_LAMPORTS, sweepable_lamports
 from casino.utils.money import MathService, SolAmount
@@ -78,6 +79,10 @@ class MigrationPlan:
                 "Re-run, or pass --force if you are sure."
             )
         return tuple(reasons)
+
+
+def house_book_gap(book_lamports: int, on_chain_lamports: int) -> int:
+    return max(int(book_lamports) - max(int(on_chain_lamports), 0), 0)
 
 
 def build_plan(
@@ -190,6 +195,16 @@ def _print_plan(plan: MigrationPlan, math: MathService) -> None:
         print("Nothing to send. Player deposits and the house wallet already cover the books.")
     for index, leg in enumerate(plan.legs, start=1):
         print(f"{index}. {leg.label}: {sol(leg.lamports)} -> {leg.destination}")
+    house_after = plan.house_on_chain + sum(leg.lamports for leg in plan.legs if leg.kind == "house")
+    gap = house_book_gap(plan.house_book, house_after)
+    print()
+    if gap:
+        print(
+            f"Then set house book {sol(plan.house_book)} -> {sol(house_after)} "
+            f"(ledger only, -{sol(gap)})"
+        )
+    else:
+        print("House book already matches the house wallet.")
     if plan.notes:
         print()
         for note in plan.notes:
@@ -308,6 +323,52 @@ async def _run(*, apply: bool, force: bool) -> None:
             print(f"sent {leg.label}: {signature}")
         leftover = await container.solana.get_balance(plan.super_address)
         print(f"done. super leftover {math.format_sol(SolAmount.from_lamports(leftover))} SOL")
+        await _sync_house_book(container, apply=True)
+    finally:
+        await container.solana.close()
+        await container.mongo.close()
+
+
+async def _sync_house_book(container, *, apply: bool) -> None:
+    house_address = container.solana.house_address
+    if not house_address:
+        raise SystemExit("House wallet is not configured.")
+    on_chain = await container.solana.get_balance(house_address)
+    treasury = await container.house.get()
+    gap = house_book_gap(treasury.sol_balance_lamports, on_chain)
+    math = container.math
+    before = math.format_sol(SolAmount.from_lamports(treasury.sol_balance_lamports))
+    after = math.format_sol(SolAmount.from_lamports(on_chain))
+    if gap <= 0:
+        print(f"House book {before} SOL already at or below house wallet {after} SOL.")
+        return
+    print(f"House book {before} SOL -> {after} SOL (write down {math.format_sol(SolAmount.from_lamports(gap))} SOL).")
+    if not apply:
+        print("Dry run only. Re-run with --sync-house-book --apply to update the ledger.")
+        return
+    quote = await container.price.get_quote(allow_stale=True)
+    treasury, _entry = await container.balances.debit_house_reserve(
+        amount=SolAmount.from_lamports(gap),
+        price_usd=quote.sol_price("USD"),
+        description="Sync house book down to on-chain house wallet after super migration",
+        entry_type=LedgerEntryType.ADJUSTMENT,
+        transaction_type=TransactionType.ADJUSTMENT,
+    )
+    print(
+        f"House book is now {math.format_sol(SolAmount.from_lamports(treasury.sol_balance_lamports))} SOL."
+    )
+
+
+async def _run_sync_only(*, apply: bool) -> None:
+    _load_env_files()
+    settings = Settings()  # type: ignore[call-arg]
+    if not settings.solana_private_key:
+        raise SystemExit("Set SOLANA_PRIVATE_KEY first.")
+    container = ContainerFactory().build(settings)
+    await container.mongo.connect()
+    await container.solana.connect()
+    try:
+        await _sync_house_book(container, apply=apply)
     finally:
         await container.solana.close()
         await container.mongo.close()
@@ -320,14 +381,22 @@ def main() -> None:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Send the transfers. Default is a dry run.",
+        help="Send the transfers and sync the house book. Default is a dry run.",
     )
     parser.add_argument(
         "--force",
         action="store_true",
         help="Allow sending even if games, rains, or jackpots are still open.",
     )
+    parser.add_argument(
+        "--sync-house-book",
+        action="store_true",
+        help="Only lower the house book to the house wallet on-chain balance (no SOL sends).",
+    )
     args = parser.parse_args()
+    if args.sync_house_book:
+        asyncio.run(_run_sync_only(apply=args.apply))
+        return
     asyncio.run(_run(apply=args.apply, force=args.force))
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from casino.solana_client.rpc import RENT_EXEMPT_FALLBACK_LAMPORTS, SWEEP_FEE_LAMPORTS
 from pydantic import SecretStr
 
-from casino.tools.migrate_super_wallet import _super_wallet_secret, build_plan
+from casino.tools.migrate_super_wallet import _super_wallet_secret, build_plan, house_book_gap
 
 
 def test_plan_splits_players_then_house_and_counts_fees() -> None:
@@ -91,6 +91,12 @@ def test_plan_blocks_when_super_is_short_or_tables_are_open() -> None:
         force=True,
     )
     assert forced.blockers == ()
+
+
+def test_house_book_gap_only_writes_down() -> None:
+    assert house_book_gap(6_495_313_117, 6_206_839_455) == 288_473_662
+    assert house_book_gap(1_000, 1_000) == 0
+    assert house_book_gap(500, 800) == 0
 
 
 def test_super_wallet_secret_reads_settings_field() -> None:
