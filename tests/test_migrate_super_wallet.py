@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from casino.solana_client.rpc import RENT_EXEMPT_FALLBACK_LAMPORTS, SWEEP_FEE_LAMPORTS
-from casino.tools.migrate_super_wallet import build_plan
+from pydantic import SecretStr
+
+from casino.tools.migrate_super_wallet import _super_wallet_secret, build_plan
 
 
 def test_plan_splits_players_then_house_and_counts_fees() -> None:
@@ -54,3 +56,10 @@ def test_plan_blocks_when_super_is_short_or_tables_are_open() -> None:
         force=True,
     )
     assert forced.blockers == ()
+
+
+def test_super_wallet_secret_reads_settings_field() -> None:
+    class _Settings:
+        super_wallet_private_key = SecretStr("super-secret")
+
+    assert _super_wallet_secret(_Settings()) == "super-secret"  # type: ignore[arg-type]

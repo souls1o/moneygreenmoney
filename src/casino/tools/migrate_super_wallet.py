@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from casino.config.settings import Settings
 from casino.container import ContainerFactory
@@ -150,11 +151,34 @@ def _print_plan(plan: MigrationPlan, math: MathService) -> None:
             print(f"- {reason}")
 
 
+def _load_env_files() -> None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    for name in (".env", ".env.prod", ".env.dev"):
+        path = Path(name)
+        if path.is_file():
+            load_dotenv(path, override=False)
+
+
+def _super_wallet_secret(settings: Settings) -> str:
+    if settings.super_wallet_private_key is not None:
+        value = settings.super_wallet_private_key.get_secret_value().strip()
+        if value:
+            return value
+    return os.environ.get("SUPER_WALLET_PRIVATE_KEY", "").strip()
+
+
 async def _build_live_plan(*, force: bool) -> tuple[object, object, MigrationPlan]:
-    secret = os.environ.get("SUPER_WALLET_PRIVATE_KEY", "").strip()
-    if not secret:
-        raise SystemExit("Set SUPER_WALLET_PRIVATE_KEY in the environment (your current .env is fine).")
+    _load_env_files()
     settings = Settings()  # type: ignore[call-arg]
+    secret = _super_wallet_secret(settings)
+    if not secret:
+        raise SystemExit(
+            "SUPER_WALLET_PRIVATE_KEY was not found in .env / .env.prod / .env.dev. "
+            "Keep that line in the env file you are using, then run this from the same directory."
+        )
     if not settings.solana_private_key or not settings.deposit_master_secret:
         raise SystemExit("Set SOLANA_PRIVATE_KEY and DEPOSIT_MASTER_SECRET first.")
     container = ContainerFactory().build(settings)

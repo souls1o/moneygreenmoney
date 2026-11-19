@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     solana_commitment: str = "confirmed"
     solana_private_key: SecretStr | None = None
     deposit_master_secret: SecretStr | None = None
+    super_wallet_private_key: SecretStr | None = None
 
     coingecko_base_url: str = "https://api.coingecko.com/api/v3"
     price_cache_ttl_seconds: int = Field(default=45, ge=5, le=300)
@@ -65,6 +66,7 @@ class Settings(BaseSettings):
     @field_validator(
         "solana_private_key",
         "deposit_master_secret",
+        "super_wallet_private_key",
         mode="before",
     )
     @classmethod
