@@ -657,6 +657,7 @@ class DocumentMapper:
             total_fees_collected_lamports=int(document.get("totalFeesCollectedLamports", 0)),
             founder_shares=int(document.get("founderShares", 0)),
             investor_shares=int(document.get("investorShares", 0)),
+            stats_reset_at=self._time.to_utc(document.get("statsResetAt")),
             version=int(document.get("version", 0)),
             updated_at=self._time.to_utc(document.get("updatedAt")),
         )

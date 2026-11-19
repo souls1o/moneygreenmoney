@@ -49,7 +49,7 @@ class GameTablePresenter:
         listing_channel = await self._open_games_destination(game)
         if listing_channel is None:
             raise GameError(
-                "Ask an admin to set the open coinflip, dice, blackjack, or target channel in `/admin config`."
+                "Ask an admin to set the open coinflip or open dice channel in `/admin config`."
             )
         refreshed = game
         if game.guild_id:

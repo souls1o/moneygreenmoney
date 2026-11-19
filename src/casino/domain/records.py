@@ -501,9 +501,11 @@ class GuildConfigRecord:
         if game_type is GameType.DICE:
             return self.open_dice_channel_id or self.open_games_channel_id
         if game_type is GameType.BLACKJACK:
-            return self.open_blackjack_channel_id or self.open_games_channel_id
+            return None
         if game_type is GameType.TARGET:
-            return self.open_target_channel_id or self.open_games_channel_id
+            return None
+        if game_type is GameType.LIMBO:
+            return None
         return self.open_coinflip_channel_id or self.open_games_channel_id
 
     def category_id(self, game_type: GameType) -> str | None:
@@ -656,6 +658,7 @@ class HouseTreasuryRecord:
     total_fees_collected_lamports: int = 0
     founder_shares: int = 0
     investor_shares: int = 0
+    stats_reset_at: datetime | None = None
     version: int = 0
     updated_at: datetime | None = None
 

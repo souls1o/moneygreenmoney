@@ -105,54 +105,6 @@ class CasinoBot(commands.Bot):
             await self.jackpots.resume()
         except Exception:
             self._logger.exception("jackpot_resume_failed")
-        for guild in self.guilds:
-            try:
-                await self.sync_invest_command_access(guild)
-            except Exception:
-                self._logger.exception("invest_command_access_failed", guildId=str(guild.id))
-
-    async def on_guild_join(self, guild: discord.Guild) -> None:
-        try:
-            await self.sync_invest_command_access(guild)
-        except Exception:
-            self._logger.exception("invest_command_access_failed", guildId=str(guild.id))
-
-    async def sync_invest_command_access(self, guild: discord.Guild) -> None:
-        if self.application_id is None:
-            return
-        try:
-            commands = await self.tree.fetch_commands()
-        except discord.HTTPException:
-            self._logger.exception("invest_command_fetch_failed")
-            return
-        command = discord.utils.get(commands, name="invest")
-        if command is None:
-            return
-        config = await self.container.guild_configs.get(str(guild.id))
-        permissions: list[dict[str, object]] = []
-        if config.investor_role_id:
-            permissions.append(
-                {
-                    "id": int(config.investor_role_id),
-                    "type": int(discord.AppCommandPermissionType.role),
-                    "permission": True,
-                }
-            )
-        try:
-            await self.http.edit_application_command_permissions(
-                self.application_id,
-                guild.id,
-                command.id,
-                {"permissions": permissions},
-            )
-        except discord.Forbidden:
-            self._logger.warning(
-                "invest_command_permissions_forbidden",
-                guildId=str(guild.id),
-                hint="Allow /invest for the Investor role in Server Settings → Integrations",
-            )
-        except discord.HTTPException:
-            self._logger.exception("invest_command_permissions_failed", guildId=str(guild.id))
 
     async def on_app_command_error(
         self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError

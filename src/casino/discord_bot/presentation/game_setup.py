@@ -161,7 +161,7 @@ class GameSetupView(discord.ui.LayoutView):
         return current
 
     async def _require_listing(self, interaction: discord.Interaction, game_type: GameType) -> None:
-        if game_type is GameType.BLACKJACK:
+        if game_type is GameType.BLACKJACK or game_type is GameType.TARGET:
             return
         home = is_home_guild(self._container.settings, interaction.guild_id)
         if game_type is GameType.COINFLIP and not home:
@@ -174,7 +174,6 @@ class GameSetupView(discord.ui.LayoutView):
         names = {
             GameType.COINFLIP: "open coinflips",
             GameType.DICE: "open dice",
-            GameType.TARGET: "open target",
         }
         raise GameError(f"Ask an admin to set the {names.get(game_type, 'open games')} channel in `/admin config`.")
 
@@ -186,7 +185,7 @@ class GameSetupView(discord.ui.LayoutView):
                 raise GameError("This command must be used in a text channel.")
             refreshed = await bot.tables.provision_here(game, channel)
             return refreshed, f"<#{refreshed.channel_id}>" if refreshed.channel_id else "this channel"
-        if game.game_type is GameType.COINFLIP and not home:
+        if game.is_target() or (game.game_type is GameType.COINFLIP and not home):
             channel = self._channel
             if channel is None or not isinstance(channel, discord.abc.Messageable):
                 raise GameError("This command must be used in a channel.")

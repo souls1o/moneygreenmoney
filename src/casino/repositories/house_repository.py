@@ -122,6 +122,26 @@ class HouseRepository(MongoRepository):
         numbers = (document or {}).get("nextGameNumbers") or {}
         return int(numbers.get(game_type.value) or 1)
 
+    async def reset_stats(
+        self, now: datetime, session: AsyncIOMotorClientSession | None = None
+    ) -> HouseTreasuryRecord:
+        document = await self.collection.find_one_and_update(
+            {"name": HOUSE_DOCUMENT_NAME},
+            {
+                "$set": {
+                    "totalFeesCollectedLamports": 0,
+                    "statsResetAt": now,
+                    "updatedAt": now,
+                },
+                "$inc": {"version": 1},
+                "$setOnInsert": {"name": HOUSE_DOCUMENT_NAME, "solBalanceLamports": 0},
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        return self._mapper.house_from_document(document)
+
     async def seed_founder_shares(
         self,
         shares: int,

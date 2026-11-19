@@ -724,6 +724,13 @@ class MemoryHouseRepository:
         self.next_game_numbers[key] = self.next_game_numbers.get(key, 0) + 1
         return self.next_game_numbers[key]
 
+    async def reset_stats(self, now: datetime, session=None) -> HouseTreasuryRecord:
+        self.record.total_fees_collected_lamports = 0
+        self.record.stats_reset_at = now
+        self.record.version += 1
+        self.record.updated_at = now
+        return self.record
+
     async def seed_founder_shares(self, shares: int, now: datetime, session=None) -> HouseTreasuryRecord:
         if self.record.founder_shares == 0 and shares > 0:
             self.record.founder_shares = shares

@@ -178,8 +178,11 @@ class EmbedFactory:
         playing = game.status is GameStatus.ACTIVE
         if show_result is None:
             show_result = game.status is GameStatus.COMPLETED
+        title = "Blackjack"
+        if show_result:
+            title = self._vs_house_title(game, "Blackjack")
         builder = (
-            self.builder("Blackjack", description=balance_text)
+            self.builder(title, description=balance_text)
             .persistent()
             .footer("Blackjack pays 3:2 · Dealer hits on soft 17")
             .field("Dealer", self._blackjack_dealer_line(game, cards=dealer_cards))
@@ -277,8 +280,9 @@ class EmbedFactory:
             lines.append(f"{outcome}  {change}")
         if balance_text:
             lines.append(balance_text)
+        title = self._vs_house_title(game, "Limbo") if finished else "Limbo"
         builder = (
-            self.builder("Limbo", description="\n".join(lines))
+            self.builder(title, description="\n".join(lines))
             .persistent()
             .field("Wager", self._wager_usd(game))
         )
@@ -1064,57 +1068,24 @@ class EmbedFactory:
             )
             .divider()
             .field(
-                "Coinflip",
+                "Games",
                 (
-                    "`/coinflip <amount>` opens a private rules panel. Set **1v1 or 2v2**, Heads/Tails, and first-to, "
-                    "then **Create table**. Join from the listing, then every seated player presses **Ready**."
-                ),
-            )
-            .divider()
-            .field(
-                "Dice",
-                (
-                    "`/dice <amount>` opens a private rules panel. Set matchup and first-to, then **Create table**. "
-                    "Highest two-dice total scores the point. In **2v2**, that point goes to the team. "
-                    "Take turns with `/roll` in the private table."
-                ),
-            )
-            .divider()
-            .field(
-                "Blackjack",
-                (
-                    "`/blackjack <amount>` deals vs the house in the channel you used. "
+                    "**Coinflip** — `/coinflip <amount>` opens a private rules panel. Set **1v1 or 2v2**, Heads/Tails, "
+                    "and first-to, then **Create table**. Join from the listing, then every seated player presses **Ready**.\n"
+                    "**Dice** — `/dice <amount>` opens a private rules panel. Set matchup and first-to, then **Create table**. "
+                    "Highest two-dice total scores the point (in **2v2** that point goes to the team). "
+                    "Take turns with `/roll` in the private table.\n"
+                    "**Blackjack** — `/blackjack <amount>` deals vs the house in the channel you used. "
                     "8-deck shoe, blackjack pays 3:2, dealer hits soft 17, no peek, no surrender, "
-                    "no double after split, split once to two hands, one card on split aces. "
-                    "No extra 3% game fee."
-                ),
-            )
-            .divider()
-            .field(
-                "Limbo",
-                (
-                    "`/limbo <amount> <multiplier>` vs the house. You win if the crash is at least your target. "
-                    "A win pays **target × bet**. Odds include a **3%** house edge "
-                    "(win chance is `97% / target`)."
-                ),
-            )
-            .divider()
-            .field(
-                "Jackpot",
-                (
-                    "The jackpot embed stays in its channel. **Join** with any amount. "
-                    "Later players can join with any amount up to **10×** the first player's bet. "
-                    "After **60 seconds** one winner is drawn; chance is **your bet / the pot**. "
+                    "no double after split, split once to two hands, one card on split aces. No extra 3% game fee.\n"
+                    "**Limbo** — `/limbo <amount> <multiplier>` vs the house. You win if the crash is at least your target. "
+                    "A win pays **target × bet**. Odds include a **3%** house edge (win chance is `97% / target`).\n"
+                    "**Target** — `/target <amount>` opens a table in the channel you used. Set **1v1 / 1v1v1 / 1v1v1v1**, "
+                    "then **Create table**. Players **Lock number** (1–999). Closest to the HMAC draw wins. "
+                    "If everyone is equally close, it's a push; if a subset ties closest, they split.\n"
+                    "**Jackpot** — Join the jackpot embed with any amount. Later joins can be any amount up to **10×** "
+                    "the first player's bet. After **60 seconds** one winner is drawn; chance is **your bet / the pot**. "
                     "Winner takes the pot (minus the PvP house fee). Settled rounds post to jackpot history."
-                ),
-            )
-            .divider()
-            .field(
-                "Target",
-                (
-                    "`/target <amount>` opens a private rules panel. Set **1v1 / 1v1v1 / 1v1v1v1**, then **Create table**. "
-                    "Players **Lock number** (1–999, hidden until the draw). "
-                    "Closest to the HMAC draw wins. If everyone is equally close, it's a push; if a subset ties closest, they split."
                 ),
             )
             .divider()
@@ -1328,16 +1299,15 @@ class EmbedFactory:
             self.builder(
                 "Casino channel config",
                 description=(
-                    "Set the open coinflip, dice, blackjack, and target lobbies, outcome channels, private-table categories, "
+                    "Set the open coinflip and dice lobbies, outcome channels, private-table categories, "
                     "the rain channel and optional rain ping, the verify channel and member role, "
                     "jackpot and jackpot history, "
-                    "the investor role, support tickets, the provably fair panel, and admin alert channels."
+                    "the investor role, support tickets, the provably fair panel, and admin alert channels. "
+                    "Blackjack and target open in the channel where the command is used."
                 ),
             )
             .field("Open coinflips", self._channel(config.listing_channel_id(GameType.COINFLIP)))
             .field("Open dice", self._channel(config.listing_channel_id(GameType.DICE)))
-            .field("Open blackjack", self._channel(config.listing_channel_id(GameType.BLACKJACK)))
-            .field("Open target", self._channel(config.listing_channel_id(GameType.TARGET)))
             .field("Coinflip outcomes", self._channel(config.coinflip_outcomes_channel_id))
             .field("Coinflip category", self._channel(config.coinflip_category_id))
             .field("Dice outcomes", self._channel(config.dice_outcomes_channel_id))
@@ -1350,7 +1320,7 @@ class EmbedFactory:
             .field("Rain ping", self._role(config.rain_ping_role_id))
             .field("Verify", self._channel(config.verify_channel_id))
             .field("Member role", self._role(config.member_role_id))
-            .field("Investor role", self._role(config.investor_role_id))
+            .field("Investor role", f"{self._role(config.investor_role_id)} · required for `/invest`")
             .field("Support panel", self._channel(config.support_channel_id))
             .field("Support category", self._channel(config.support_category_id))
             .field("Support role", self._role(config.support_role_id))
@@ -1951,6 +1921,13 @@ class EmbedFactory:
         if hand.outcome is BlackjackOutcome.BLACKJACK:
             return wager + wager // 2
         return wager
+
+    def _vs_house_title(self, game: GameRecord, name: str) -> str:
+        if not game.winner_ids:
+            return name
+        if game.winner_ids == [game.creator_id]:
+            return f"✅ {name}"
+        return f"❌ {name}"
 
     def _blackjack_result_line(self, game: GameRecord) -> str:
         if not game.winner_ids:

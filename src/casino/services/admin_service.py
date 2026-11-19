@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from casino.db.unit_of_work import UnitOfWorkFactory
 from casino.domain.enums import LedgerEntryType, TransactionType, UserRole
@@ -107,6 +108,35 @@ class AdminService:
 
     async def house_treasury(self) -> HouseTreasuryRecord:
         return await self._house.get()
+
+    async def reset_house_stats(self, actor_id: str) -> HouseTreasuryRecord:
+        treasury = await self._house.reset_stats(datetime.now(UTC))
+        self._logger.info("house_stats_reset", actorId=actor_id)
+        return treasury
+
+    async def clear_house_balance(self, actor_id: str) -> HouseTreasuryRecord:
+        quote = await self._prices.get_quote(allow_stale=True)
+        usd_price = quote.sol_price("USD")
+        async with self._uow.begin() as uow:
+            treasury = await self._house.get(session=uow.session)
+            amount = SolAmount.from_lamports(max(treasury.sol_balance_lamports, 0))
+            if amount.is_zero():
+                return treasury
+            treasury, _entry = await self._balances.debit_house_reserve(
+                amount=amount,
+                price_usd=usd_price,
+                description=f"Admin cleared house book by {actor_id}",
+                entry_type=LedgerEntryType.ADJUSTMENT,
+                transaction_type=TransactionType.ADJUSTMENT,
+                session=uow.session,
+            )
+        self._logger.info(
+            "house_balance_cleared",
+            actorId=actor_id,
+            amountLamports=amount.lamports,
+            userId=HOUSE_USER_ID,
+        )
+        return treasury
 
     async def fund_house(self, amount: SolAmount, actor_id: str) -> HouseTreasuryRecord:
         quote = await self._prices.get_quote(allow_stale=True)

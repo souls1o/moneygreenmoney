@@ -122,6 +122,34 @@ class AdminCog(commands.Cog):
         report = await self._container.house_stats.snapshot()
         await interaction.response.send_message(**self._embeds.house_stats(report).send_kwargs(ephemeral=True))
 
+    @app_commands.command(name="reset_housestats", description="Reset house stats windows and lifetime fees")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    async def reset_housestats(self, interaction: discord.Interaction) -> None:
+        await self._guard(interaction)
+        await self._container.admin.reset_house_stats(str(interaction.user.id))
+        await interaction.response.send_message(
+            **self._embeds.success(
+                "House stats reset",
+                "Timeframe stats and lifetime fees start from now. The house book balance was not changed.",
+            ).send_kwargs(ephemeral=True)
+        )
+
+    @app_commands.command(name="clear_housebal", description="Set the house book SOL balance to zero")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    async def clear_housebal(self, interaction: discord.Interaction) -> None:
+        await self._guard(interaction)
+        treasury = await self._container.admin.clear_house_balance(str(interaction.user.id))
+        await interaction.response.send_message(
+            **self._embeds.success(
+                "House book cleared",
+                f"House book is now `{self._container.math.format_sol(SolAmount.from_lamports(treasury.sol_balance_lamports))} SOL`.",
+            ).send_kwargs(ephemeral=True)
+        )
+
     @admin.command(name="fund-house", description="Add SOL to house reserves for call-bot")
     @app_commands.describe(amount_sol="SOL amount to add to reserves")
     async def fund_house(self, interaction: discord.Interaction, amount_sol: str) -> None:
@@ -160,8 +188,6 @@ class AdminCog(commands.Cog):
             app_commands.Choice(name="Coinflip how to play", value="coinflip"),
             app_commands.Choice(name="Open coinflips header", value="open_coinflips"),
             app_commands.Choice(name="Open dice header", value="open_dice"),
-            app_commands.Choice(name="Open blackjack header", value="open_blackjack"),
-            app_commands.Choice(name="Open target header", value="open_target"),
             app_commands.Choice(name="Coinflip outcomes header", value="coinflip_outcomes"),
             app_commands.Choice(name="Dice header", value="dice"),
             app_commands.Choice(name="Dice outcomes header", value="dice_outcomes"),
@@ -219,8 +245,6 @@ class AdminCog(commands.Cog):
             jobs = [
                 (config.listing_channel_id(GameType.COINFLIP), self._embeds.channel_open_coinflips()),
                 (config.listing_channel_id(GameType.DICE), self._embeds.channel_open_dice()),
-                (config.listing_channel_id(GameType.BLACKJACK), self._embeds.channel_open_blackjack()),
-                (config.listing_channel_id(GameType.TARGET), self._embeds.channel_open_target()),
                 (config.coinflip_outcomes_channel_id, self._embeds.channel_outcomes("coinflip")),
                 (config.dice_outcomes_channel_id, self._embeds.channel_outcomes("dice")),
                 (config.blackjack_outcomes_channel_id, self._embeds.channel_outcomes("blackjack")),
@@ -238,10 +262,6 @@ class AdminCog(commands.Cog):
             jobs = [(chosen or config.listing_channel_id(GameType.COINFLIP), self._embeds.channel_open_coinflips())]
         elif kind == "open_dice":
             jobs = [(chosen or config.listing_channel_id(GameType.DICE), self._embeds.channel_open_dice())]
-        elif kind == "open_blackjack":
-            jobs = [(chosen or config.listing_channel_id(GameType.BLACKJACK), self._embeds.channel_open_blackjack())]
-        elif kind == "open_target":
-            jobs = [(chosen or config.listing_channel_id(GameType.TARGET), self._embeds.channel_open_target())]
         elif kind == "coinflip_outcomes":
             jobs = [(chosen or config.coinflip_outcomes_channel_id, self._embeds.channel_outcomes("coinflip"))]
         elif kind == "dice":

@@ -87,12 +87,6 @@ class _ConfigRoleSelect(discord.ui.RoleSelect):
         config = await self._container.guild_configs.set_slot(
             str(interaction.guild_id), self._slot, role_id
         )
-        if self._slot is GuildConfigSlot.INVESTOR_ROLE and interaction.guild is not None:
-            from casino.discord_bot.bot import CasinoBot
-
-            bot = interaction.client
-            if isinstance(bot, CasinoBot):
-                await bot.sync_invest_command_access(interaction.guild)
         panel = build_admin_config(self._container, self._embeds, config, page=self._page)
         await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
 
@@ -308,28 +302,8 @@ def build_admin_config(
             _ConfigChannelSelect(
                 container,
                 embeds,
-                GuildConfigSlot.OPEN_BLACKJACK,
-                placeholder="Open blackjack channel",
-                channel_types=text,
-                page=4,
-            )
-        )
-        builder.add_item(
-            _ConfigChannelSelect(
-                container,
-                embeds,
                 GuildConfigSlot.BLACKJACK_OUTCOMES,
                 placeholder="Blackjack outcomes channel",
-                channel_types=text,
-                page=4,
-            )
-        )
-        builder.add_item(
-            _ConfigChannelSelect(
-                container,
-                embeds,
-                GuildConfigSlot.OPEN_TARGET,
-                placeholder="Open target channel",
                 channel_types=text,
                 page=4,
             )

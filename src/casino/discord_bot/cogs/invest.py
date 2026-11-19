@@ -19,7 +19,6 @@ class InvestCog(commands.Cog):
         self._errors = DiscordErrorPresenter()
 
     @app_commands.command(name="invest", description="Buy or sell a share of the house book")
-    @app_commands.default_permissions()
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def invest(self, interaction: discord.Interaction) -> None:

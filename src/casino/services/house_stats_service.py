@@ -159,7 +159,7 @@ class HouseStatsService:
 
     async def snapshot(self) -> HouseStatsReport:
         treasury = await self._house.get()
-        games = await self._games.list_completed_since()
+        games = await self._games.list_completed_since(treasury.stats_reset_at)
         open_games = await self._games.list_open(limit=100)
         quote = await self._prices.get_quote(allow_stale=True)
         return self._calculator.report(
