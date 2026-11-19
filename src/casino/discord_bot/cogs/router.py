@@ -13,6 +13,7 @@ from casino.discord_bot.presentation.modals import (
     BlackjackBetModal,
     JackpotJoinModal,
     LimboBetModal,
+    MinesBetModal,
     TargetPickModal,
     TicketCloseModal,
     TicketCreateModal,
@@ -43,7 +44,21 @@ class ComponentRouterCog(commands.Cog):
         if not custom_id:
             return
         handled = custom_id.startswith(
-            ("cf:", "bal:", "profile:", "settings:", "pf:", "rain:", "verify:", "bj:", "lb:", "tg:", "ticket:", "jp:")
+            (
+                "cf:",
+                "bal:",
+                "profile:",
+                "settings:",
+                "pf:",
+                "rain:",
+                "verify:",
+                "bj:",
+                "lb:",
+                "tg:",
+                "ticket:",
+                "jp:",
+                "mn:",
+            )
         )
         if not handled:
             return
@@ -101,6 +116,16 @@ class ComponentRouterCog(commands.Cog):
             elif (game_id := self._ids.parse_limbo_bet(custom_id)):
                 await interaction.response.send_modal(
                     LimboBetModal(self._container, self._embeds, self._errors, game_id)
+                )
+            elif (target := self._ids.parse_mines_tile(custom_id)):
+                await self._on_mines_tile(interaction, target.game_id, target.tile)
+            elif (game_id := self._ids.parse_mines_cashout(custom_id)):
+                await self._on_mines_cashout(interaction, game_id)
+            elif (game_id := self._ids.parse_mines_new(custom_id)):
+                await self._on_mines_new(interaction, game_id)
+            elif (game_id := self._ids.parse_mines_bet(custom_id)):
+                await interaction.response.send_modal(
+                    MinesBetModal(self._container, self._embeds, self._errors, game_id)
                 )
             elif (target := self._ids.parse_blackjack(custom_id)):
                 await self._on_blackjack(interaction, target.game_id, target.action)
@@ -339,6 +364,24 @@ class ComponentRouterCog(commands.Cog):
     async def _on_limbo_new(self, interaction: discord.Interaction, game_id: str) -> None:
         with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
             await self._tables().handle_limbo_redeal(
+                game_id, str(interaction.user.id), interaction=interaction
+            )
+
+    async def _on_mines_tile(self, interaction: discord.Interaction, game_id: str, tile: int) -> None:
+        with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
+            await self._tables().handle_mines_reveal(
+                game_id, str(interaction.user.id), tile, interaction=interaction
+            )
+
+    async def _on_mines_cashout(self, interaction: discord.Interaction, game_id: str) -> None:
+        with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
+            await self._tables().handle_mines_cashout(
+                game_id, str(interaction.user.id), interaction=interaction
+            )
+
+    async def _on_mines_new(self, interaction: discord.Interaction, game_id: str) -> None:
+        with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
+            await self._tables().handle_mines_redeal(
                 game_id, str(interaction.user.id), interaction=interaction
             )
 

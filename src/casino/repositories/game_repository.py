@@ -49,6 +49,34 @@ class GameRepository(MongoRepository):
         cursor = self.collection.find(self._player_completed_query(discord_id)).sort("resolvedAt", -1)
         return [self._mapper.game_from_document(doc) async for doc in cursor]
 
+    async def sum_player_wagered_since(self, discord_id: str, since: datetime) -> int:
+        pipeline = [
+            {
+                "$match": {
+                    **self._player_completed_query(discord_id),
+                    "resolvedAt": {"$gte": since},
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "total": {
+                        "$sum": {
+                            "$ifNull": [
+                                f"$playerWagerLamports.{discord_id}",
+                                "$betAmountLamports",
+                            ]
+                        }
+                    },
+                }
+            },
+        ]
+        cursor = await self.collection.aggregate(pipeline)
+        docs = await cursor.to_list(length=1)
+        if not docs:
+            return 0
+        return int(docs[0].get("total") or 0)
+
     async def list_open(self, limit: int = 20) -> list[GameRecord]:
         cursor = self.collection.find({"status": GameStatus.PENDING.value}).sort("createdAt", -1).limit(limit)
         return [self._mapper.game_from_document(doc) async for doc in cursor]

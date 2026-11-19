@@ -260,6 +260,7 @@ class ContainerFactory:
             uow,
             settings,
             house_repo,
+            games_repo,
         )
         rain_worker = RainExpiryWorker(rains)
         jackpots_repo = JackpotRepository(mongo, mapper)

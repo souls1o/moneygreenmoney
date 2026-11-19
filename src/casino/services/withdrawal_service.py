@@ -82,6 +82,8 @@ class WithdrawalService:
         if payout.is_zero():
             raise ValidationError("Enter a withdrawal amount greater than zero.")
 
+        await self._rpc.collect_user_into_super(discord_id)
+        await self._rpc.collect_house_into_super()
         super_balance = await self._rpc.get_balance(self._rpc.super_address)
         rent = await self._rpc.get_rent_exempt_lamports()
         needed = payout.lamports + SWEEP_FEE_LAMPORTS + rent

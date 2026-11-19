@@ -17,6 +17,12 @@ class BlackjackTarget:
     action: BlackjackAction
 
 
+@dataclass(frozen=True, slots=True)
+class MinesTileTarget:
+    game_id: str
+    tile: int
+
+
 class ComponentIdCodec:
     JOIN = "cf:join:"
     JOIN_HEADS = "cf:join_heads:"
@@ -49,6 +55,10 @@ class ComponentIdCodec:
     TICKET_TOPIC = "ticket:topic"
     TICKET_CLOSE = "ticket:close:"
     JP_JOIN = "jp:join:"
+    MN_TILE = "mn:t:"
+    MN_CASH = "mn:cash:"
+    MN_NEW = "mn:new:"
+    MN_BET = "mn:bet:"
 
     def join(self, game_id: str) -> str:
         return f"{self.JOIN}{game_id}"
@@ -192,6 +202,39 @@ class ComponentIdCodec:
 
     def parse_ticket_close(self, custom_id: str) -> str | None:
         return custom_id[len(self.TICKET_CLOSE) :] if custom_id.startswith(self.TICKET_CLOSE) else None
+
+    def mines_tile(self, game_id: str, tile: int) -> str:
+        return f"{self.MN_TILE}{game_id}:{tile}"
+
+    def mines_cashout(self, game_id: str) -> str:
+        return f"{self.MN_CASH}{game_id}"
+
+    def mines_new(self, game_id: str) -> str:
+        return f"{self.MN_NEW}{game_id}"
+
+    def mines_bet(self, game_id: str) -> str:
+        return f"{self.MN_BET}{game_id}"
+
+    def parse_mines_tile(self, custom_id: str) -> MinesTileTarget | None:
+        if not custom_id.startswith(self.MN_TILE):
+            return None
+        remainder = custom_id[len(self.MN_TILE) :]
+        game_id, _, tile = remainder.rpartition(":")
+        if not game_id:
+            return None
+        try:
+            return MinesTileTarget(game_id=game_id, tile=int(tile))
+        except ValueError:
+            return None
+
+    def parse_mines_cashout(self, custom_id: str) -> str | None:
+        return custom_id[len(self.MN_CASH) :] if custom_id.startswith(self.MN_CASH) else None
+
+    def parse_mines_new(self, custom_id: str) -> str | None:
+        return custom_id[len(self.MN_NEW) :] if custom_id.startswith(self.MN_NEW) else None
+
+    def parse_mines_bet(self, custom_id: str) -> str | None:
+        return custom_id[len(self.MN_BET) :] if custom_id.startswith(self.MN_BET) else None
 
     def parse_history(self, custom_id: str) -> HistoryTarget | None:
         if not custom_id.startswith(self.HISTORY):

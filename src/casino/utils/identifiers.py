@@ -15,6 +15,7 @@ class IdentifierFactory:
         GameType.BLACKJACK: "bj",
         GameType.TARGET: "tg",
         GameType.LIMBO: "lb",
+        GameType.MINES: "mn",
         GameType.JACKPOT: "jp",
     }
     LEDGER_PREFIX = "ld"

@@ -39,6 +39,15 @@ class StubRpc:
     async def get_rent_exempt_lamports(self, data_len: int = 0) -> int:
         return RENT_EXEMPT_FALLBACK_LAMPORTS
 
+    swept_users: list[str] = []
+
+    async def collect_house_into_super(self) -> str | None:
+        return None
+
+    async def collect_user_into_super(self, discord_id: str) -> str | None:
+        self.swept_users.append(discord_id)
+        return None
+
     async def send_from_super(self, destination: str, amount: SolAmount) -> str:
         if self.fail:
             raise RuntimeError("rpc down")
@@ -67,6 +76,7 @@ def _service(*, enabled: bool = True):
     )
     rpc = StubRpc()
     rpc.sent = []
+    rpc.swept_users = []
     rpc.fail = False
     rpc.balance = 10_000_000_000
     service = WithdrawalService(
@@ -145,6 +155,7 @@ async def test_withdrawal_sends_from_super_and_debits() -> None:
     assert users_repo.users["1"].sol_balance_lamports == 750_000_000
     assert users_repo.users["1"].total_withdrawn_lamports == 250_000_000
     assert rpc.sent == [(DESTINATION, 247_500_000)]
+    assert rpc.swept_users == ["1"]
     assert seen == [("1", "withdraw-sig")]
     assert house_repo.record.sol_balance_lamports == 2_500_000
     assert house_repo.record.total_fees_collected_lamports == 0

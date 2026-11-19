@@ -23,6 +23,11 @@ SWEEP_FEE_LAMPORTS = 5_000
 RENT_EXEMPT_FALLBACK_LAMPORTS = 890_880
 
 
+def sweepable_lamports(balance: int, rent: int, *, fee: int = SWEEP_FEE_LAMPORTS) -> int:
+    keep = max(int(rent), 0) + max(int(fee), 0)
+    return max(int(balance) - keep, 0)
+
+
 class SolanaRpcUnavailableError(RuntimeError):
     """RPC returned a rate-limit, HTML, or otherwise unusable payload."""
 
@@ -225,15 +230,35 @@ class SolanaRpcGateway:
         response = await self.client.send_transaction(transaction, opts=opts)
         return str(response.value)
 
+    async def collect_house_into_super(self) -> str | None:
+        if not self.has_house_wallet or self._super_keypair is None:
+            return None
+        try:
+            return await self.sweep_to_super(self.house_keypair())
+        except Exception:
+            self._logger.exception("house_sweep_failed")
+            return None
+
+    async def collect_user_into_super(self, discord_id: str) -> str | None:
+        if self._deposit_wallets is None or self._super_keypair is None:
+            return None
+        try:
+            return await self.sweep_to_super(self.player_keypair(discord_id))
+        except Exception:
+            self._logger.exception("deposit_sweep_failed", userId=discord_id)
+            return None
+
     async def sweep_to_super(self, source: Keypair) -> str | None:
         if self._super_keypair is None:
             return None
         if source.pubkey() == self._super_keypair.pubkey():
             return None
         balance = await self.get_balance(str(source.pubkey()))
-        if balance <= SWEEP_FEE_LAMPORTS:
+        rent = await self.get_rent_exempt_lamports()
+        amount_lamports = sweepable_lamports(balance, rent)
+        if amount_lamports <= 0:
             return None
-        amount = SolAmount.from_lamports(balance - SWEEP_FEE_LAMPORTS)
+        amount = SolAmount.from_lamports(amount_lamports)
         transaction = self._transfers.build(
             payer=source,
             recent_blockhash=await self.get_latest_blockhash(),

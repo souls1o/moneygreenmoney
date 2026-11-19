@@ -270,6 +270,16 @@ class MemoryGameRepository:
     async def list_completed_by_player(self, discord_id: str) -> list[GameRecord]:
         return await self.list_by_player(discord_id, limit=10_000, skip=0)
 
+    async def sum_player_wagered_since(self, discord_id: str, since: datetime) -> int:
+        total = 0
+        for game in self.games.values():
+            if game.status is not GameStatus.COMPLETED or not game.has_player(discord_id):
+                continue
+            if game.resolved_at is None or game.resolved_at < since:
+                continue
+            total += game.wager_for(discord_id).lamports
+        return total
+
     async def try_add_to_side(
         self,
         game_id: str,
@@ -486,6 +496,10 @@ class MemoryGameRepository:
             target_number=game.target_number,
             limbo_target=game.limbo_target,
             limbo_result=game.limbo_result,
+            mines_count=game.mines_count,
+            mines_tiles=list(game.mines_tiles),
+            mines_revealed=list(game.mines_revealed),
+            mines_hit=game.mines_hit,
         )
 
 

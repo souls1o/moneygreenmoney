@@ -28,6 +28,16 @@ class _ButtonSpec:
 
 
 @dataclass(slots=True)
+class _ButtonGroup:
+    buttons: list[_ButtonSpec]
+
+
+@dataclass(slots=True)
+class _ItemSpec:
+    item: discord.ui.Item
+
+
+@dataclass(slots=True)
 class CasinoPanel:
     """A styled panel: Components V2 container, or a classic embed when fields are inline."""
 
@@ -67,12 +77,11 @@ class EmbedBuilder:
     def __init__(self) -> None:
         self._title = ""
         self._description = ""
-        self._fields: list[_FieldSpec] = []
+        self._parts: list[_FieldSpec | _ButtonGroup | _ItemSpec] = []
+        self._open_buttons: list[_ButtonSpec] | None = None
         self._footer = ""
         self._accent: int | None = None
         self._thumbnail: str | None = None
-        self._buttons: list[_ButtonSpec] = []
-        self._items: list[discord.ui.Item] = []
         self._outside: list[str] = []
         self._timeout: float | None = 180
 
@@ -85,11 +94,13 @@ class EmbedBuilder:
         return self
 
     def field(self, name: str, value: str, *, inline: bool = False) -> Self:
-        self._fields.append(_FieldSpec(name.strip() or "\u200b", str(value).strip() or "\u200b", inline))
+        self._flush_buttons()
+        self._parts.append(_FieldSpec(name.strip() or "\u200b", str(value).strip() or "\u200b", inline))
         return self
 
     def divider(self) -> Self:
-        self._fields.append(_FieldSpec("", "", divider=True))
+        self._flush_buttons()
+        self._parts.append(_FieldSpec("", "", divider=True))
         return self
 
     def fields(self, pairs: Sequence[tuple[str, str]], *, inline: bool = False) -> Self:
@@ -133,7 +144,9 @@ class EmbedBuilder:
         callback: ButtonCallback | None = None,
         url: str | None = None,
     ) -> Self:
-        self._buttons.append(
+        if self._open_buttons is None:
+            self._open_buttons = []
+        self._open_buttons.append(
             _ButtonSpec(
                 label=label,
                 style=discord.ButtonStyle.link if url else style,
@@ -146,7 +159,8 @@ class EmbedBuilder:
         return self
 
     def add_item(self, item: discord.ui.Item) -> Self:
-        self._items.append(item)
+        self._flush_buttons()
+        self._parts.append(_ItemSpec(item))
         return self
 
     def outside(self, text: str) -> Self:
@@ -156,13 +170,15 @@ class EmbedBuilder:
         return self
 
     def build(self) -> CasinoPanel:
-        if any(field.inline for field in self._fields):
+        self._flush_buttons()
+        if any(field.inline for field in self._field_specs()):
             return CasinoPanel(view=self._classic_view(), title=self._title, embed=self._classic_embed())
         view = discord.ui.LayoutView(timeout=self._timeout)
         self.apply_to(view)
         return CasinoPanel(view=view, title=self._title)
 
     def apply_to(self, view: discord.ui.LayoutView) -> discord.ui.LayoutView:
+        self._flush_buttons()
         view.clear_items()
         for text in self._outside:
             view.add_item(discord.ui.TextDisplay(text))
@@ -182,9 +198,14 @@ class EmbedBuilder:
         elif header:
             children.append(discord.ui.TextDisplay(header))
 
-        if self._fields:
+        field_buffer: list[_FieldSpec] = []
+        footer_added = False
+
+        def flush_fields() -> None:
+            if not field_buffer:
+                return
             groups: list[list[_FieldSpec]] = [[]]
-            for field in self._fields:
+            for field in field_buffer:
                 if field.divider:
                     groups.append([])
                     continue
@@ -202,24 +223,36 @@ class EmbedBuilder:
                 rendered = True
             if not rendered:
                 children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+            field_buffer.clear()
 
-        if self._footer:
+        def maybe_footer(*, later_fields: bool) -> None:
+            nonlocal footer_added
+            if footer_added or later_fields or not self._footer:
+                return
             children.append(discord.ui.Separator(visible=False, spacing=discord.SeparatorSpacing.small))
             children.append(discord.ui.TextDisplay(f"-# {self._footer}"))
+            footer_added = True
 
-        if self._buttons or self._items:
+        for index, part in enumerate(self._parts):
+            if isinstance(part, _FieldSpec):
+                field_buffer.append(part)
+                continue
+            flush_fields()
+            maybe_footer(later_fields=self._has_later_fields(index + 1))
             children.append(discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+            if isinstance(part, _ButtonGroup):
+                for chunk in _chunks(part.buttons, 5):
+                    row = discord.ui.ActionRow()
+                    for spec in chunk:
+                        row.add_item(_styled_button(spec))
+                    children.append(row)
+            else:
+                row = discord.ui.ActionRow()
+                row.add_item(part.item)
+                children.append(row)
 
-        for chunk in _chunks(self._buttons, 5):
-            row = discord.ui.ActionRow()
-            for spec in chunk:
-                row.add_item(_styled_button(spec))
-            children.append(row)
-
-        for item in self._items:
-            row = discord.ui.ActionRow()
-            row.add_item(item)
-            children.append(row)
+        flush_fields()
+        maybe_footer(later_fields=False)
 
         if not children:
             children.append(discord.ui.TextDisplay(" "))
@@ -247,7 +280,7 @@ class EmbedBuilder:
             embed.set_thumbnail(url=self._thumbnail)
         if self._footer:
             embed.set_footer(text=self._footer)
-        for field in self._fields:
+        for field in self._field_specs():
             if field.divider:
                 continue
             embed.add_field(name=field.name, value=field.value, inline=field.inline)
@@ -255,15 +288,36 @@ class EmbedBuilder:
 
     def _classic_view(self) -> discord.ui.View:
         view = discord.ui.View(timeout=self._timeout)
-        for spec in self._buttons:
+        for spec in self._button_specs():
             view.add_item(_styled_button(spec))
-        for item in self._items:
-            view.add_item(item)
+        for part in self._parts:
+            if isinstance(part, _ItemSpec):
+                view.add_item(part.item)
         return view
 
     def _fields_text(self) -> str:
-        blocks = [f"**{field.name}**\n{field.value}" for field in self._fields]
+        blocks = [f"**{field.name}**\n{field.value}" for field in self._field_specs() if not field.divider]
         return "\n\n".join(blocks)
+
+    def _flush_buttons(self) -> None:
+        if self._open_buttons:
+            self._parts.append(_ButtonGroup(self._open_buttons))
+            self._open_buttons = None
+
+    def _field_specs(self) -> list[_FieldSpec]:
+        return [part for part in self._parts if isinstance(part, _FieldSpec)]
+
+    def _button_specs(self) -> list[_ButtonSpec]:
+        buttons: list[_ButtonSpec] = []
+        for part in self._parts:
+            if isinstance(part, _ButtonGroup):
+                buttons.extend(part.buttons)
+        if self._open_buttons:
+            buttons.extend(self._open_buttons)
+        return buttons
+
+    def _has_later_fields(self, start: int) -> bool:
+        return any(isinstance(part, _FieldSpec) and not part.divider for part in self._parts[start:])
 
 
 class _CallbackButton(discord.ui.Button):

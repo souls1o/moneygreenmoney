@@ -15,6 +15,7 @@ from casino.domain.affiliate import (
 )
 from casino.domain.blackjack import BlackjackAction, BlackjackOutcome, hand_total
 from casino.domain.limbo import LIMBO_START, format_limbo_multiplier
+from casino.domain.mines import MINES_TILES, format_mines_multiplier, mines_multiplier
 from casino.domain.investor import InvestorPosition
 from casino.domain.enums import (
     CoinSide,
@@ -139,6 +140,8 @@ class EmbedFactory:
             return self.blackjack_table(game)
         if game.is_limbo():
             return self.limbo_table(game)
+        if game.is_mines():
+            return self.mines_table(game)
         if game.is_target():
             return self.target_table(game)
         mode_label = self._mode_label(game)
@@ -173,13 +176,14 @@ class EmbedFactory:
         show_result: bool | None = None,
         balance_text: str = "",
         actions: bool = True,
+        history: bool = False,
     ) -> CasinoPanel:
         allowed = game.blackjack_legal_actions()
         playing = game.status is GameStatus.ACTIVE
         if show_result is None:
             show_result = game.status is GameStatus.COMPLETED
         title = "Blackjack"
-        if show_result:
+        if history and show_result:
             title = self._vs_house_title(game, "Blackjack")
         builder = (
             self.builder(title, description=balance_text)
@@ -188,6 +192,9 @@ class EmbedFactory:
             .field("Dealer", self._blackjack_dealer_line(game, cards=dealer_cards))
             .divider()
             .field(self._mention(game.creator_id), self._blackjack_player_lines(game, show_outcome=show_result))
+            .divider()
+            .field("Wager", self._wager_usd(game))
+            .divider()
         )
         if not actions:
             if show_result:
@@ -263,6 +270,7 @@ class EmbedFactory:
         crash_value: Decimal | None = None,
         reveal: bool = True,
         balance_text: str = "",
+        history: bool = False,
     ) -> CasinoPanel:
         shown = crash_value if crash_value is not None else game.limbo_result
         if shown is None:
@@ -280,11 +288,12 @@ class EmbedFactory:
             lines.append(f"{outcome}  {change}")
         if balance_text:
             lines.append(balance_text)
-        title = self._vs_house_title(game, "Limbo") if finished else "Limbo"
+        title = self._vs_house_title(game, "Limbo") if history and finished else "Limbo"
         builder = (
             self.builder(title, description="\n".join(lines))
             .persistent()
             .field("Wager", self._wager_usd(game))
+            .divider()
         )
         if actions and finished:
             builder.button(
@@ -307,6 +316,95 @@ class EmbedFactory:
                 custom_id=self._ids.verify_game(game.game_id),
             )
         return builder.build()
+
+    async def mines_panel(self, game: GameRecord) -> CasinoPanel:
+        return self.mines_table(game, balance_text=await self._blackjack_balance_line(game))
+
+    def mines_table(
+        self,
+        game: GameRecord,
+        *,
+        actions: bool = True,
+        balance_text: str = "",
+        history: bool = False,
+    ) -> CasinoPanel:
+        gems = len(game.mines_revealed)
+        playing = game.status is GameStatus.ACTIVE
+        finished = game.status is GameStatus.COMPLETED
+        current = format_mines_multiplier(mines_multiplier(game.mines_count, gems))
+        lines = [f"{self._mention(game.creator_id)} · **{game.mines_count}** mines · **{current}x**"]
+        if finished:
+            change = self._player_balance_change(game, game.creator_id)
+            if game.mines_hit is not None:
+                lines.append(f"Hit a mine on tile **{game.mines_hit + 1}**.  {change}")
+            else:
+                lines.append(f"Cashed out **{gems}** gem{'s' if gems != 1 else ''}.  {change}")
+        if balance_text:
+            lines.append(balance_text)
+        title = self._vs_house_title(game, "Mines") if history and finished else "Mines"
+        builder = self.builder(title, description="\n".join(lines)).persistent()
+        mine_set = set(game.mines_tiles)
+        revealed = set(game.mines_revealed)
+        for index in range(MINES_TILES):
+            builder.button(
+                **self._mines_tile_button(game, index, mine_set=mine_set, revealed=revealed, playing=playing)
+            )
+        builder.field("Wager", self._wager_usd(game)).divider()
+        if actions and playing:
+            builder.button(
+                "Cash out",
+                style=discord.ButtonStyle.success,
+                custom_id=self._ids.mines_cashout(game.game_id),
+                disabled=not game.mines_revealed,
+            )
+        elif actions and finished:
+            builder.button(
+                "New Round",
+                style=discord.ButtonStyle.success,
+                custom_id=self._ids.mines_new(game.game_id),
+            ).button(
+                "Change Bet",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.mines_bet(game.game_id),
+            ).button(
+                "Verify",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.verify_game(game.game_id),
+            )
+        elif actions is False and finished:
+            builder.button(
+                "Verify",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.verify_game(game.game_id),
+            )
+        return builder.build()
+
+    def _mines_tile_button(
+        self,
+        game: GameRecord,
+        index: int,
+        *,
+        mine_set: set[int],
+        revealed: set[int],
+        playing: bool,
+    ) -> dict[str, object]:
+        opened = index in revealed
+        is_mine = index in mine_set
+        show_mines = game.status is GameStatus.COMPLETED
+        if opened and is_mine:
+            label, style = "💣", discord.ButtonStyle.danger
+        elif opened:
+            label, style = "💎", discord.ButtonStyle.success
+        elif show_mines and is_mine:
+            label, style = "💣", discord.ButtonStyle.danger
+        else:
+            label, style = "\u200b", discord.ButtonStyle.secondary
+        return {
+            "label": label,
+            "style": style,
+            "custom_id": self._ids.mines_tile(game.game_id, index),
+            "disabled": (not playing) or opened,
+        }
 
     def jackpot_table(self, jackpot: JackpotRecord, *, history: bool = False) -> CasinoPanel:
         from casino.domain.jackpot import max_join_lamports, win_chance
@@ -578,9 +676,11 @@ class EmbedFactory:
 
     def resolved_game(self, game: GameRecord, *, rerun: bool = False) -> CasinoPanel:
         if game.is_blackjack():
-            return self.blackjack_table(game, actions=False)
+            return self.blackjack_table(game, actions=False, history=True)
         if game.is_limbo():
-            return self.limbo_table(game, actions=False)
+            return self.limbo_table(game, actions=False, history=True)
+        if game.is_mines():
+            return self.mines_table(game, actions=False, history=True)
         if game.is_target():
             return self.target_table(game)
         title = self._game_title(game)
@@ -689,6 +789,7 @@ class EmbedFactory:
                 "• **Blackjack** — paste nonce as `gameNonce:cardIndex` (first card is `N:0`). "
                 "The first 8 hex characters of the HMAC pick a card 0–51.\n"
                 "• **Limbo** — HMAC of `clientSeed:nonce:limbo`. First 13 hex characters become the crash.\n"
+                "• **Mines** — HMAC of `clientSeed:nonce:mines:drawIndex` plants each mine on the 5×5 board.\n"
                 "• **Target** — paste nonce as `gameNonce:target:0` for the draw (1–999). "
                 "House picks use `gameNonce:target:1`."
             ),
@@ -703,6 +804,8 @@ class EmbedFactory:
             return self._blackjack_fair(game, revealed)
         if game.is_limbo():
             return self._limbo_fair(game, revealed)
+        if game.is_mines():
+            return self._mines_fair(game, revealed)
         if game.is_target():
             return self._target_fair(game, revealed)
         return self._coinflip_fair(game, revealed)
@@ -862,7 +965,7 @@ class EmbedFactory:
 
     def _history_line(self, game: GameRecord, user_id: str, number: int) -> str:
         mark = "✅" if game.player_won(user_id) else "❌"
-        kind = "Dice" if game.is_dice() else "Coinflip"
+        kind = game.game_type.value.title()
         return (
             f"{number}. {mark} {kind} {game.matchup_label()} "
             f"{self._signed_usd(game.player_profit_fiat(user_id))}"
@@ -1080,6 +1183,10 @@ class EmbedFactory:
                     "no double after split, split once to two hands, one card on split aces. No extra 3% game fee.\n"
                     "**Limbo** — `/limbo <amount> <multiplier>` vs the house. You win if the crash is at least your target. "
                     "A win pays **target × bet**. Odds include a **3%** house edge (win chance is `97% / target`).\n"
+                    "**Mines** — `/mines <amount>` opens a private setup. Pick **1–24** mines, then **Create table**. "
+                    "The **5×5** board posts in the channel so others can watch; only you can click. "
+                    "Open gems, then **Cash out**. Hit a mine and you lose. "
+                    "Odds include a **3%** house edge. No extra 3% game fee.\n"
                     "**Target** — `/target <amount>` opens a table in the channel you used. Set **1v1 / 1v1v1 / 1v1v1v1**, "
                     "then **Create table**. Players **Lock number** (1–999). Closest to the HMAC draw wins. "
                     "If everyone is equally close, it's a push; if a subset ties closest, they split.\n"
@@ -1090,9 +1197,9 @@ class EmbedFactory:
                 "Fees",
                 (
                     f"PvP games take **{fee} of the total pot** when they resolve. "
-                    "Blackjack has no extra game fee. Limbo's 3% edge is in the crash odds. "
+                    "Blackjack has no extra game fee. Limbo and mines put a 3% edge in the odds. "
                     f"Minimum bet is **{min_bet}**. There is no player vs player max. "
-                    "Blackjack and limbo max bet is **10% of the house book**. "
+                    "Blackjack, limbo, and mines max bet is **10% of the house book**. "
                     "House-bot exposure on coinflip and dice is also **10% of the house book** per table."
                 ),
             )
@@ -1781,6 +1888,37 @@ class EmbedFactory:
             .build()
         )
 
+    def _mines_fair(self, game: GameRecord, revealed: bool) -> CasinoPanel:
+        seed = f"`{game.server_seed}`" if revealed and game.server_seed else "Hidden until the round completes"
+        mines = ", ".join(str(tile + 1) for tile in game.mines_tiles) if revealed and game.mines_tiles else "Hidden"
+        description = (
+            f"**{self._game_title(game)}** — {game.mines_count} mines on a 5×5 board.\n\n"
+            "**What each number means**\n"
+            "• **Server seed hash** — shown when the board is dealt.\n"
+            "• **Server seed** — revealed when the round ends.\n"
+            "• **Client seed** — random string for this round.\n"
+            "• **Game nonce** — this round's counter.\n\n"
+            "**How to replay the mines**\n"
+            f"HMAC-SHA256(server_seed, `{game.client_seed}:{game.nonce}:mines:drawIndex`). "
+            "For each mine, the first 8 hex characters pick an unused tile from the remaining 25. "
+            "Tiles are numbered 1–25, left to right, top to bottom."
+        )
+        return (
+            self.builder("Provably fair check", description=description)
+            .divider()
+            .field("Server seed hash", f"`{game.server_seed_hash}`")
+            .divider()
+            .field("Server seed", seed)
+            .divider()
+            .field("Client seed", f"`{game.client_seed}`")
+            .divider()
+            .field("Game nonce", str(game.nonce))
+            .divider()
+            .field("Mines", mines)
+            .button("Open verifier", url=self._container.settings.verify_page_url())
+            .build()
+        )
+
     def _target_fair(self, game: GameRecord, revealed: bool) -> CasinoPanel:
         seed = f"`{game.server_seed}`" if revealed and game.server_seed else "Hidden until the draw"
         description = (
@@ -2101,7 +2239,8 @@ class EmbedFactory:
             return f"{who} started a rain of **{pot}**. **{joiners}** joined. Settling."
         return (
             f"{who} started a rain of **{pot}**. **{joiners}** joined so far. "
-            "Click Join for an equal share when the timer ends."
+            "Click Join for an equal share when the timer ends. "
+            "You must have wagered at least **10% of this rain** in the last 24 hours to join."
         )
 
     def _rain_share_fiat(self, rain: RainRecord) -> Decimal | None:

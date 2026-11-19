@@ -20,7 +20,7 @@ class RainCog(commands.Cog):
 
     @app_commands.command(
         name="rain",
-        description="Start a rain. Anyone who joins splits the pot equally when the timer ends.",
+        description="Start a rain. Joiners who wagered 10% of the pot in the last 24h split it equally.",
     )
     @app_commands.describe(
         amount="Rain pot in your selected currency (minimum $50 USD)",
@@ -69,7 +69,7 @@ class RainCog(commands.Cog):
                 await interaction.followup.send(
                     **self._embeds.success(
                         "Rain started",
-                        f"Join it in {listing}. The pot is split equally when the timer ends.",
+                        f"Join it in {listing}. Joiners must have wagered 10% of the pot in the last 24 hours.",
                     ).send_kwargs(ephemeral=True)
                 )
             except Exception as exc:

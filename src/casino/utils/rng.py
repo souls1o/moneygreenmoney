@@ -59,6 +59,12 @@ class FairLimbo:
 
 
 @dataclass(frozen=True, slots=True)
+class FairMines:
+    digest: str
+    mines: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class FairTarget:
     digest: str
     value: int
@@ -147,6 +153,29 @@ class ProvablyFairService:
         ).hexdigest()
         raw = int(digest[:8], 16)
         return FairTarget(digest=digest, value=raw % 999 + 1, index=index)
+
+    def resolve_mines(
+        self,
+        server_seed: str,
+        client_seed: str,
+        nonce: int,
+        mine_count: int,
+        *,
+        tiles: int = 25,
+    ) -> FairMines:
+        remaining = list(range(int(tiles)))
+        mines: list[int] = []
+        digest = ""
+        draws = min(max(int(mine_count), 0), len(remaining))
+        for draw in range(draws):
+            digest = hmac.new(
+                server_seed.encode("utf-8"),
+                f"{client_seed}:{nonce}:mines:{draw}".encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            pick = int(digest[:8], 16) % len(remaining)
+            mines.append(remaining.pop(pick))
+        return FairMines(digest=digest, mines=tuple(sorted(mines)))
 
     def resolve_limbo(self, server_seed: str, client_seed: str, nonce: int) -> FairLimbo:
         digest = hmac.new(

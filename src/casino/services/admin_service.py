@@ -180,6 +180,7 @@ class AdminService:
         if wallet == self._rpc.super_address:
             raise ValidationError("Choose a different destination wallet.")
 
+        await self._rpc.collect_house_into_super()
         super_balance = await self._rpc.get_balance(self._rpc.super_address)
         rent = await self._rpc.get_rent_exempt_lamports()
         needed = amount.lamports + SWEEP_FEE_LAMPORTS + rent

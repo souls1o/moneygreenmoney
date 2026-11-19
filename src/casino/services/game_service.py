@@ -27,6 +27,12 @@ from casino.domain.records import (
     is_house_seat,
 )
 from casino.domain.limbo import limbo_payout_lamports, limbo_profit_lamports, parse_limbo_multiplier
+from casino.domain.mines import (
+    MINES_TILES,
+    mines_gems_available,
+    mines_payout_lamports,
+    parse_mines_count,
+)
 from casino.domain.target import closest_winners, parse_target_pick
 from casino.errors import GameError, InsufficientHouseReserveError, NotFoundError
 from casino.logging.logger import LogContext, get_logger
@@ -94,6 +100,7 @@ class GameService:
         max_players: int = 2,
         first_to: int | None = None,
         limbo_target: Decimal | str | None = None,
+        mines_count: int | str | None = None,
     ) -> GameRecord:
         user = await self._user_service.get_or_create(player1_id)
         quote = await self._prices.get_quote()
@@ -103,7 +110,7 @@ class GameService:
         usd_price = quote.sol_price("USD")
         bet_usd = fiat_amount * usd_price / sol_price
         self._validation.validate_bet(bet_usd)
-        if game_type is GameType.BLACKJACK or game_type is GameType.LIMBO:
+        if game_type in {GameType.BLACKJACK, GameType.LIMBO, GameType.MINES}:
             await self._require_vs_house_bet_cap(bet)
 
         now = self._clock.now()
@@ -117,11 +124,12 @@ class GameService:
         parsed_limbo = parse_limbo_multiplier(limbo_target) if game_type is GameType.LIMBO else None
         if game_type is GameType.LIMBO and parsed_limbo is None:
             raise GameError("Choose a multiplier from 1.01 to 1,000,000.")
-        if game_type is not GameType.LIMBO:
+        parsed_mines = parse_mines_count(mines_count) if game_type is GameType.MINES else 0
+        if game_type not in {GameType.LIMBO, GameType.MINES}:
             if target < 1 or target > 21:
                 raise GameError("First-to must be between 1 and 21.")
         first_to = target
-        if game_type is GameType.BLACKJACK or game_type is GameType.LIMBO:
+        if game_type in {GameType.BLACKJACK, GameType.LIMBO, GameType.MINES}:
             heads_ids = [player1_id]
             tails_ids = [HOUSE_USER_ID]
         if game_type is GameType.DICE:
@@ -163,6 +171,7 @@ class GameService:
             max_players=max_players if game_type in {GameType.DICE, GameType.TARGET} else 2,
             first_to=first_to,
             limbo_target=parsed_limbo,
+            mines_count=parsed_mines,
             created_at=now,
         )
         game.record_wager(player1_id, bet.lamports)
@@ -187,6 +196,8 @@ class GameService:
                     )
                 if game_type is GameType.LIMBO:
                     await self._play_limbo(game, bet, usd_price, bet_usd, session=uow.session)
+                if game_type is GameType.MINES:
+                    await self._start_mines(game, bet, usd_price, session=uow.session)
                 replaced = await self._games.replace(game, session=uow.session)
                 if not replaced:
                     raise GameError("The game could not be stored.")
@@ -737,7 +748,7 @@ class GameService:
         return resolved
 
     def _sync_auto_flip(self, game: GameRecord, now) -> None:
-        if game.is_target() or game.is_blackjack() or game.is_limbo():
+        if game.is_target() or game.is_blackjack() or game.is_limbo() or game.is_mines():
             game.auto_flip_at = None
             return
         if game.is_full():
@@ -1611,3 +1622,170 @@ class GameService:
         if reserved + extra_lamports <= cap:
             return
         raise GameError("The house can take at most 10% of the house book on this table.")
+
+    async def mines_reveal(self, game_id: str, player_id: str, tile: int) -> GameRecord:
+        quote = await self._prices.get_quote(allow_stale=True)
+        usd_price = quote.sol_price("USD")
+        with LogContext.bind(userId=player_id, gameId=game_id):
+            async with self._uow.begin() as uow:
+                game = await self._require_active_mines(game_id, player_id, session=uow.session)
+                index = int(tile)
+                if index < 0 or index >= MINES_TILES:
+                    raise GameError("Pick a tile on the board.")
+                if index in game.mines_revealed:
+                    raise GameError("That tile is already open.")
+                if index in game.mines_tiles:
+                    game.mines_revealed.append(index)
+                    game.mines_hit = index
+                    await self._complete_mines(game, usd_price, session=uow.session)
+                else:
+                    extra = self._mines_profit_delta(
+                        game.bet_amount_lamports,
+                        game.mines_count,
+                        len(game.mines_revealed),
+                        len(game.mines_revealed) + 1,
+                    )
+                    if extra > 0:
+                        try:
+                            _treasury, house_bet = await self._balances.debit_house_reserve(
+                                amount=SolAmount.from_lamports(extra),
+                                price_usd=usd_price,
+                                description=f"House mines {game.game_id}",
+                                game_id=game.game_id,
+                                session=uow.session,
+                            )
+                        except InsufficientHouseReserveError as exc:
+                            raise GameError(
+                                "The house book does not have enough SOL for that tile."
+                            ) from exc
+                        game.ledger_ids.append(house_bet.entry_id)
+                        game.record_wager(
+                            HOUSE_USER_ID,
+                            game.wager_for(HOUSE_USER_ID).lamports + extra,
+                        )
+                    game.mines_revealed.append(index)
+                    if len(game.mines_revealed) >= mines_gems_available(game.mines_count):
+                        await self._complete_mines(game, usd_price, session=uow.session)
+                replaced = await self._games.replace(game, session=uow.session)
+                if not replaced:
+                    raise GameError("The board could not be updated due to a concurrent action.")
+            self._logger.info("mines_reveal", tile=index, status=game.status.value)
+        return game
+
+    async def mines_cashout(self, game_id: str, player_id: str) -> GameRecord:
+        quote = await self._prices.get_quote(allow_stale=True)
+        usd_price = quote.sol_price("USD")
+        with LogContext.bind(userId=player_id, gameId=game_id):
+            async with self._uow.begin() as uow:
+                game = await self._require_active_mines(game_id, player_id, session=uow.session)
+                if not game.mines_revealed:
+                    raise GameError("Open at least one gem before cashing out.")
+                await self._complete_mines(game, usd_price, session=uow.session)
+                replaced = await self._games.replace(game, session=uow.session)
+                if not replaced:
+                    raise GameError("The board could not be updated due to a concurrent action.")
+            self._logger.info("mines_cashout", gems=len(game.mines_revealed))
+        return game
+
+    async def _require_active_mines(self, game_id: str, player_id: str, *, session) -> GameRecord:
+        game = await self._games.find_by_id(game_id, session=session)
+        if game is None:
+            raise NotFoundError("That game was not found.")
+        if not game.is_mines() or game.status is not GameStatus.ACTIVE:
+            raise GameError("This mines table is not in play.")
+        if player_id != game.creator_id:
+            raise GameError("Only the player can act on this table.")
+        return game
+
+    def _mines_profit_delta(self, bet_lamports: int, mines: int, old_gems: int, new_gems: int) -> int:
+        old_profit = max(mines_payout_lamports(bet_lamports, mines, old_gems) - bet_lamports, 0)
+        new_profit = max(mines_payout_lamports(bet_lamports, mines, new_gems) - bet_lamports, 0)
+        return max(new_profit - old_profit, 0)
+
+    async def _start_mines(self, game: GameRecord, bet: SolAmount, usd_price: Decimal, *, session) -> None:
+        mines = parse_mines_count(game.mines_count)
+        if not game.server_seed:
+            raise GameError("This game is missing its server seed.")
+        fair = self._rng.resolve_mines(game.server_seed, game.client_seed, game.nonce, mines)
+        game.house_seat_ids = [HOUSE_USER_ID]
+        game.record_wager(HOUSE_USER_ID, 0)
+        game.mines_tiles = list(fair.mines)
+        game.mines_revealed = []
+        game.mines_hit = None
+        game.ready_ids = [game.creator_id]
+        game.status = GameStatus.ACTIVE
+        game.auto_flip_at = None
+
+    async def _complete_mines(self, game: GameRecord, usd_price: Decimal, *, session) -> None:
+        bet = SolAmount.from_lamports(game.bet_amount_lamports)
+        reserved = SolAmount.from_lamports(int(game.player_wager_lamports.get(HOUSE_USER_ID, 0)))
+        gems = len(game.mines_revealed)
+        hit = game.mines_hit is not None
+        payout = (
+            SolAmount.zero()
+            if hit
+            else SolAmount.from_lamports(mines_payout_lamports(bet.lamports, game.mines_count, gems))
+        )
+        leftover = SolAmount.from_lamports(max(reserved.lamports + bet.lamports - payout.lamports, 0))
+        if not leftover.is_zero():
+            _treasury, take = await self._balances.credit_house_reserve(
+                amount=leftover,
+                entry_type=LedgerEntryType.WIN,
+                transaction_type=TransactionType.WIN,
+                price_usd=usd_price,
+                description=f"Mines house {game.game_id}",
+                game_id=game.game_id,
+                session=session,
+            )
+            game.ledger_ids.append(take.entry_id)
+        if not payout.is_zero():
+            win = await self._balances.credit(
+                user_id=game.creator_id,
+                amount=payout,
+                entry_type=LedgerEntryType.WIN,
+                transaction_type=TransactionType.WIN,
+                price_usd=usd_price,
+                description=f"Mines win {game.game_id}",
+                game_id=game.game_id,
+                won=payout,
+                session=session,
+            )
+            game.ledger_ids.append(win.ledger_entry.entry_id)
+            game.winner_ids = [game.creator_id]
+        else:
+            game.winner_ids = [HOUSE_USER_ID]
+        game.winner_id = game.winner_ids[0]
+        now = self._clock.now()
+        await self._assign_game_number(game, session=session)
+        bet_usd = game.stake_usd() if game.bet_amount_usd > 0 else self._math.sol_to_fiat(bet, usd_price)
+        payout_usd = self._math.sol_to_fiat(payout, usd_price)
+        won = not hit
+        await self._users.apply_game_stats(
+            game.creator_id,
+            wagered=bet,
+            wagered_usd=bet_usd,
+            max_bet_usd=bet_usd,
+            fees_paid=SolAmount.zero(),
+            won=won,
+            won_usd=payout_usd if won else Decimal("0"),
+            now=now,
+            session=session,
+        )
+        game.status = GameStatus.COMPLETED
+        game.house_fee_lamports = 0
+        game.house_fee_usd = Decimal("0")
+        game.winner_payout_lamports = payout.lamports
+        game.per_winner_payout_lamports = payout.lamports
+        game.resolved_at = now
+        game.expires_at = None
+        game.auto_flip_at = None
+        self._logger.info(
+            "game_resolved",
+            winnerIds=game.winner_ids,
+            houseFeeLamports=0,
+            payoutLamports=payout.lamports,
+            gameType=game.game_type.value,
+            minesCount=game.mines_count,
+            minesGems=gems,
+            minesHit=game.mines_hit,
+        )

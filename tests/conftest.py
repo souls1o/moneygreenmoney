@@ -89,6 +89,7 @@ class FixedRandomService:
         cards: list | None = None,
         targets: list[int] | None = None,
         limbos: list | None = None,
+        mines: list | None = None,
     ) -> None:
         self._side = side
         self._dice_pairs = dice_pairs
@@ -96,6 +97,7 @@ class FixedRandomService:
         self._cards = cards
         self._targets = targets
         self._limbos = limbos
+        self._mines = mines
 
     def commit(self) -> FairCommitment:
         return FairCommitment(server_seed="fixed-server-seed", server_seed_hash="fixed-hash")
@@ -125,6 +127,20 @@ class FixedRandomService:
 
         values = self._targets or [500, 250]
         return FairTarget(digest="fixed-target", value=values[index % len(values)], index=index)
+
+    def resolve_mines(
+        self,
+        server_seed: str,
+        client_seed: str,
+        nonce: int,
+        mine_count: int,
+        *,
+        tiles: int = 25,
+    ):
+        from casino.utils.rng import FairMines
+
+        planted = tuple(self._mines or list(range(int(mine_count))))
+        return FairMines(digest="fixed-mines", mines=planted)
 
     def resolve_limbo(self, server_seed: str, client_seed: str, nonce: int):
         from casino.utils.rng import FairLimbo

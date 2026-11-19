@@ -168,6 +168,10 @@ class DocumentMapper:
             "targetNumber": game.target_number,
             "limboTarget": MongoRepository.decimal_to_str(game.limbo_target) if game.limbo_target is not None else None,
             "limboResult": MongoRepository.decimal_to_str(game.limbo_result) if game.limbo_result is not None else None,
+            "minesCount": int(game.mines_count),
+            "minesTiles": [int(tile) for tile in game.mines_tiles],
+            "minesRevealed": [int(tile) for tile in game.mines_revealed],
+            "minesHit": game.mines_hit,
         }
 
     def game_from_document(self, document: dict[str, Any]) -> GameRecord:
@@ -251,6 +255,10 @@ class DocumentMapper:
                 if document.get("limboResult") not in (None, "")
                 else None
             ),
+            mines_count=int(document.get("minesCount") or 0),
+            mines_tiles=[int(tile) for tile in (document.get("minesTiles") or [])],
+            mines_revealed=[int(tile) for tile in (document.get("minesRevealed") or [])],
+            mines_hit=int(document["minesHit"]) if document.get("minesHit") is not None else None,
         )
 
     def _blackjack_card_to_document(self, card: BlackjackCard) -> dict[str, Any]:

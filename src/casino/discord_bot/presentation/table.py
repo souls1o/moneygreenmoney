@@ -60,7 +60,7 @@ class GameTablePresenter:
             game.table_number = number
         private = (
             None
-            if game.is_blackjack() or game.is_target() or game.is_limbo()
+            if game.is_blackjack() or game.is_target() or game.is_limbo() or game.is_mines()
             else await self._create_private_channel(game, creator)
         )
         if private is not None:
@@ -109,6 +109,32 @@ class GameTablePresenter:
         message = await interaction.original_response()
         channel_id = str(interaction.channel_id or message.channel.id)
         await self._container.games.attach_listing(game.game_id, channel_id, str(message.id))
+        return await self._container.games.get(game.game_id)
+
+    async def provision_mines_interaction(
+        self, game: GameRecord, interaction: discord.Interaction
+    ) -> GameRecord:
+        if game.guild_id:
+            await self._container.games.attach_guild(game.game_id, game.guild_id)
+        channel = interaction.channel
+        if not isinstance(channel, discord.abc.Messageable):
+            raise GameError("This command must be used in a channel.")
+        panel = await self._embeds.mines_panel(game)
+        posted = await channel.send(**panel.send_kwargs())
+        panel.stop()
+        await self._container.games.attach_listing(game.game_id, str(posted.channel.id), str(posted.id))
+        notice = self._embeds.success(
+            "Mines table",
+            "The board is in this channel. Anyone can watch; only you can play it.",
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(**notice.edit_kwargs())
+            else:
+                await interaction.response.send_message(**notice.send_kwargs(ephemeral=True))
+        except discord.HTTPException:
+            pass
+        notice.stop()
         return await self._container.games.get(game.game_id)
 
     async def provision_public(self, game: GameRecord, channel: discord.abc.Messageable) -> GameRecord:
@@ -185,6 +211,36 @@ class GameTablePresenter:
                 )
             return game
 
+    async def handle_mines_reveal(
+        self,
+        game_id: str,
+        player_id: str,
+        tile: int,
+        *,
+        interaction: discord.Interaction | None = None,
+    ) -> GameRecord:
+        async with self._dice_lock(game_id):
+            game = await self._container.games.mines_reveal(game_id, player_id, tile)
+            if game.status is GameStatus.COMPLETED:
+                await self.on_resolved(game, interaction=interaction)
+            else:
+                await self._edit_listing(
+                    game, await self._embeds.mines_panel(game), interaction=interaction
+                )
+            return game
+
+    async def handle_mines_cashout(
+        self,
+        game_id: str,
+        player_id: str,
+        *,
+        interaction: discord.Interaction | None = None,
+    ) -> GameRecord:
+        async with self._dice_lock(game_id):
+            game = await self._container.games.mines_cashout(game_id, player_id)
+            await self.on_resolved(game, interaction=interaction)
+            return game
+
     async def handle_blackjack_redeal(
         self,
         source_game_id: str,
@@ -215,17 +271,7 @@ class GameTablePresenter:
         if source.guild_id:
             await self._container.games.attach_guild(game.game_id, source.guild_id)
         panel = await self._embeds.blackjack_panel(game)
-        listing_interaction = None if modal else interaction
-        edited = False
-        if modal and table_message is not None:
-            try:
-                await table_message.edit(**panel.edit_kwargs())
-                panel.stop()
-                edited = True
-            except discord.HTTPException:
-                edited = False
-        if not edited:
-            await self._edit_listing(source, panel, interaction=listing_interaction)
+        await self._edit_redeal_table(source, panel, interaction=interaction, table_message=table_message)
         channel_id = source.channel_id
         message_id = source.message_id
         if table_message is not None:
@@ -234,7 +280,7 @@ class GameTablePresenter:
         if channel_id and message_id:
             await self._container.games.attach_listing(game.game_id, channel_id, message_id)
         if game.status is GameStatus.COMPLETED:
-            await self.on_resolved(game, interaction=listing_interaction)
+            await self.on_resolved(game, interaction=interaction)
         return game
 
     async def handle_limbo_redeal(
@@ -270,17 +316,7 @@ class GameTablePresenter:
         if source.guild_id:
             await self._container.games.attach_guild(game.game_id, source.guild_id)
         panel = await self._embeds.limbo_panel(game, crash_value=LIMBO_START, reveal=False)
-        listing_interaction = None if modal else interaction
-        edited = False
-        if modal and table_message is not None:
-            try:
-                await table_message.edit(**panel.edit_kwargs())
-                panel.stop()
-                edited = True
-            except discord.HTTPException:
-                edited = False
-        if not edited:
-            await self._edit_listing(source, panel, interaction=listing_interaction)
+        await self._edit_redeal_table(source, panel, interaction=interaction, table_message=table_message)
         channel_id = source.channel_id
         message_id = source.message_id
         if table_message is not None:
@@ -291,7 +327,54 @@ class GameTablePresenter:
             game.channel_id = channel_id
             game.message_id = message_id
         if game.status is GameStatus.COMPLETED:
-            await self.on_resolved(game, interaction=listing_interaction)
+            await self.on_resolved(game, interaction=interaction)
+        return game
+
+    async def handle_mines_redeal(
+        self,
+        source_game_id: str,
+        player_id: str,
+        *,
+        fiat_amount: Decimal | None = None,
+        mines_count: int | None = None,
+        interaction: discord.Interaction | None = None,
+    ) -> GameRecord:
+        from casino.domain.enums import CoinSide, GameType
+
+        source = await self._container.games.get(source_game_id)
+        if not source.is_mines() or source.status is not GameStatus.COMPLETED:
+            raise GameError("Start a new round from a finished mines game.")
+        if player_id != source.creator_id:
+            raise GameError("Only the player can start a new round.")
+        modal = getattr(interaction, "type", None) is discord.InteractionType.modal_submit
+        table_message = getattr(interaction, "message", None) if interaction is not None else None
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=bool(modal))
+        amount = source.bet_amount_fiat if fiat_amount is None else fiat_amount
+        mines = source.mines_count if mines_count is None else mines_count
+        game = await self._container.games.create_game(
+            player1_id=player_id,
+            fiat_amount=amount,
+            side=CoinSide.HEADS,
+            game_type=GameType.MINES,
+            guild_id=source.guild_id,
+            mines_count=mines,
+        )
+        if source.guild_id:
+            await self._container.games.attach_guild(game.game_id, source.guild_id)
+        panel = await self._embeds.mines_panel(game)
+        await self._edit_redeal_table(source, panel, interaction=interaction, table_message=table_message)
+        channel_id = source.channel_id
+        message_id = source.message_id
+        if table_message is not None:
+            channel_id = str(table_message.channel.id)
+            message_id = str(table_message.id)
+        if channel_id and message_id:
+            await self._container.games.attach_listing(game.game_id, channel_id, message_id)
+            game.channel_id = channel_id
+            game.message_id = message_id
+        if game.status is GameStatus.COMPLETED:
+            await self.on_resolved(game, interaction=interaction)
         return game
 
     async def _animate_blackjack_dealer(
@@ -380,6 +463,15 @@ class GameTablePresenter:
         if game.is_limbo():
             async with self._dice_lock(game.game_id):
                 await self._animate_limbo_crash(game, interaction=interaction)
+            await self._post_outcomes(game)
+            await self._refresh_provably_fair(game)
+            if self._admin_alerts is not None:
+                await self._admin_alerts.on_game_resolved(game)
+            return
+        if game.is_mines():
+            await self._edit_listing(
+                game, await self._embeds.mines_panel(game), interaction=interaction
+            )
             await self._post_outcomes(game)
             await self._refresh_provably_fair(game)
             if self._admin_alerts is not None:
@@ -846,6 +938,27 @@ class GameTablePresenter:
         panel.stop()
         return False
 
+    async def _edit_redeal_table(
+        self,
+        source: GameRecord,
+        panel: CasinoPanel,
+        *,
+        interaction: discord.Interaction | None,
+        table_message: discord.Message | None,
+    ) -> bool:
+        if table_message is not None:
+            try:
+                await table_message.edit(**panel.edit_kwargs())
+                panel.stop()
+                return True
+            except discord.HTTPException as exc:
+                self._logger.info(
+                    "redeal_message_edit_failed",
+                    code=exc.code,
+                    status=exc.status,
+                )
+        return await self._edit_listing(source, panel, interaction=interaction)
+
     async def _edit_listing(
         self,
         game: GameRecord,
@@ -866,8 +979,6 @@ class GameTablePresenter:
         panel: CasinoPanel,
     ) -> bool:
         if interaction is None:
-            return False
-        if getattr(interaction, "type", None) is discord.InteractionType.modal_submit:
             return False
         kwargs = panel.edit_kwargs()
         try:

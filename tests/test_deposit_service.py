@@ -6,7 +6,7 @@ from casino.domain.enums import LedgerEntryType
 from casino.domain.records import UserRecord
 from casino.errors import AlreadyProcessedError
 from casino.services.balance_service import BalanceService
-from casino.services.deposit_service import DepositService
+from casino.services.deposit_service import DepositService, DepositWatchTarget
 from casino.services.ledger_service import LedgerService
 from casino.services.user_service import UserService
 from casino.solana_client.deposit_parser import ParsedIncomingTransfer
@@ -35,6 +35,12 @@ class StubRpc:
     async def sweep_to_super(self, source) -> str | None:
         self.swept.append(str(source))
         return "sweep-sig"
+
+    async def collect_house_into_super(self) -> str | None:
+        return await self.sweep_to_super(self.house_keypair())
+
+    async def collect_user_into_super(self, discord_id: str) -> str | None:
+        return await self.sweep_to_super(self.player_keypair(discord_id))
 
     def player_keypair(self, discord_id: str):
         return f"player-{discord_id}"
@@ -127,6 +133,54 @@ async def test_house_deposit_credits_reserves() -> None:
     deposits = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.DEPOSIT]
     assert len(deposits) == 1
     assert deposits[0].amount_lamports == 2_000_000_000
+
+
+@pytest.mark.asyncio
+async def test_known_house_deposit_retries_sweep() -> None:
+    service, _users, _house, _ledger, rpc, _clock = _service()
+    parsed = ParsedIncomingTransfer(
+        signature="sig-house-stuck",
+        lamports=2_000_000_000,
+        destination="House1111111111111111111111111111111111111",
+        source="s",
+        memo=None,
+    )
+    await service.credit_house(parsed)
+    rpc.swept = []
+    credited = await service.ingest_signature(
+        parsed.signature,
+        DepositWatchTarget(address=rpc.house_address, is_house=True),
+    )
+    assert credited is None
+    assert rpc.swept == ["house"]
+
+
+@pytest.mark.asyncio
+async def test_known_user_deposit_retries_sweep() -> None:
+    service, users_repo, _house, _ledger, rpc, clock = _service()
+    user = UserRecord(
+        discord_id="1",
+        deposit_memo="BBTEST",
+        deposit_address="Player111111111111111111111111111111111111",
+        created_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    users_repo.users["1"] = user
+    parsed = ParsedIncomingTransfer(
+        signature="sig-user-stuck",
+        lamports=1_000_000_000,
+        destination=user.deposit_address or "",
+        source="s",
+        memo=None,
+    )
+    await service.credit_parsed(user, parsed)
+    rpc.swept = []
+    credited = await service.ingest_signature(
+        parsed.signature,
+        DepositWatchTarget(address=user.deposit_address or "", user_id="1"),
+    )
+    assert credited is None
+    assert rpc.swept == ["player-1"]
 
 
 @pytest.mark.asyncio

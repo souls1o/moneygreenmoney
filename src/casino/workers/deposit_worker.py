@@ -52,6 +52,7 @@ class DepositMonitorWorker:
                 if self._rpc_gap:
                     await asyncio.sleep(self._rpc_gap)
                 await self._tick_target(target)
+            await self._deposits.sweep_house()
         except (SolanaRpcException, SolanaRpcUnavailableError, TypeError, AttributeError) as exc:
             self._cooldown_until = now + RPC_BACKOFF
             cause = getattr(exc, "__cause__", None)
@@ -88,20 +89,20 @@ class DepositMonitorWorker:
             if len(page) < PAGE_SIZE:
                 break
             before = page[-1]
-        if not newest_first:
-            return
-        for signature in reversed(newest_first):
-            try:
-                credited = await self._deposits.ingest_signature(signature, target)
-                if credited is not None:
-                    self._logger.info(
-                        "deposit_auto_credited",
-                        txSignature=signature,
-                        userId=credited.discord_id,
-                        address=target.address,
+        if newest_first:
+            for signature in reversed(newest_first):
+                try:
+                    credited = await self._deposits.ingest_signature(signature, target)
+                    if credited is not None:
+                        self._logger.info(
+                            "deposit_auto_credited",
+                            txSignature=signature,
+                            userId=credited.discord_id,
+                            address=target.address,
+                        )
+                except Exception:
+                    self._logger.exception(
+                        "deposit_signature_failed", txSignature=signature, address=target.address
                     )
-            except Exception:
-                self._logger.exception(
-                    "deposit_signature_failed", txSignature=signature, address=target.address
-                )
-        await self._cursors.set(cursor_name, newest_first[0], self._clock.now())
+            await self._cursors.set(cursor_name, newest_first[0], self._clock.now())
+        await self._deposits.sweep_target(target)

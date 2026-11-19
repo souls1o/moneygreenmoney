@@ -24,6 +24,7 @@ class GameSetupState:
     matchup: str = "2"
     side: str = "heads"
     first_to: int = 1
+    mines: int = 3
     vs_house: bool = False
 
 
@@ -35,6 +36,8 @@ def _setup_builder(embeds: EmbedFactory, state: GameSetupState):
     ).field("Wager", amount)
     if state.game_type is GameType.BLACKJACK:
         return builder.timeout(300)
+    if state.game_type is GameType.MINES:
+        return builder.field("Mines", str(state.mines)).timeout(300)
     builder.field("Matchup", matchup_label(state.matchup))
     if state.game_type is GameType.COINFLIP:
         builder.field("Your side", state.side.title())
@@ -48,6 +51,7 @@ _TITLES = {
     GameType.DICE: "New dice table",
     GameType.BLACKJACK: "New blackjack",
     GameType.TARGET: "New target",
+    GameType.MINES: "New mines",
 }
 
 _COINFLIP_MATCHUPS = (("2", "1v1"), ("22", "2v2"))
@@ -88,6 +92,8 @@ class GameSetupView(discord.ui.LayoutView):
             builder.add_item(_FirstToSelect(self))
         elif self.state.game_type is GameType.TARGET:
             builder.add_item(_MatchupSelect(self, _TARGET_MATCHUPS))
+        elif self.state.game_type is GameType.MINES:
+            builder.add_item(_MinesSelect(self))
         builder.button(
             "Create table",
             style=discord.ButtonStyle.success,
@@ -107,6 +113,17 @@ class GameSetupView(discord.ui.LayoutView):
             return
         await interaction.response.defer()
         user_id = self.state.user_id
+        if self.state.game_type is GameType.MINES:
+            await start_mines(
+                interaction,
+                self._container,
+                self._embeds,
+                self._errors,
+                user_id=user_id,
+                fiat=self.state.fiat,
+                mines=self.state.mines,
+            )
+            return
         game_id: str | None = None
         posted = False
         with LogContext.bind(userId=user_id):
@@ -161,7 +178,7 @@ class GameSetupView(discord.ui.LayoutView):
         return current
 
     async def _require_listing(self, interaction: discord.Interaction, game_type: GameType) -> None:
-        if game_type is GameType.BLACKJACK or game_type is GameType.TARGET:
+        if game_type in {GameType.BLACKJACK, GameType.TARGET, GameType.MINES}:
             return
         home = is_home_guild(self._container.settings, interaction.guild_id)
         if game_type is GameType.COINFLIP and not home:
@@ -269,6 +286,22 @@ class _FirstToSelect(_OwnerSelect):
 
     async def _apply(self, value: str) -> None:
         self._setup.state.first_to = int(value)
+
+
+class _MinesSelect(_OwnerSelect):
+    def __init__(self, view: GameSetupView) -> None:
+        options = [
+            discord.SelectOption(
+                label=str(value),
+                value=str(value),
+                default=view.state.mines == value,
+            )
+            for value in range(1, 25)
+        ]
+        super().__init__(view, placeholder="Mines", options=options)
+
+    async def _apply(self, value: str) -> None:
+        self._setup.state.mines = int(value)
 
 
 async def open_game_setup(
@@ -406,6 +439,49 @@ async def start_limbo(
             if not isinstance(bot, CasinoBot):
                 raise RuntimeError("Casino bot is not ready.")
             refreshed = await bot.tables.provision_limbo_interaction(game, interaction)
+            posted = True
+            if refreshed.status is GameStatus.COMPLETED:
+                await bot.tables.on_resolved(refreshed, interaction=interaction)
+        except Exception as exc:
+            if game_id is not None and not posted:
+                try:
+                    await container.games.cancel_game(game_id, user_id, admin=True)
+                except Exception:
+                    pass
+            await interaction.followup.send(**errors.panel_for(exc).send_kwargs(ephemeral=True))
+
+
+async def start_mines(
+    interaction: discord.Interaction,
+    container: AppContainer,
+    embeds: EmbedFactory,
+    errors: DiscordErrorPresenter,
+    *,
+    user_id: str,
+    fiat: Decimal,
+    mines: int,
+) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    game_id: str | None = None
+    posted = False
+    with LogContext.bind(userId=user_id):
+        try:
+            game = await container.games.create_game(
+                player1_id=user_id,
+                fiat_amount=fiat,
+                side=CoinSide.HEADS,
+                game_type=GameType.MINES,
+                guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+                mines_count=mines,
+            )
+            game_id = game.game_id
+            from casino.discord_bot.bot import CasinoBot
+
+            bot = interaction.client
+            if not isinstance(bot, CasinoBot):
+                raise RuntimeError("Casino bot is not ready.")
+            refreshed = await bot.tables.provision_mines_interaction(game, interaction)
             posted = True
             if refreshed.status is GameStatus.COMPLETED:
                 await bot.tables.on_resolved(refreshed, interaction=interaction)

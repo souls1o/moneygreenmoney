@@ -88,6 +88,7 @@ class DepositService:
     async def ingest_signature(self, signature: str, target: DepositWatchTarget) -> UserRecord | None:
         existing = await self._transactions.find_by_signature(signature)
         if existing is not None:
+            await self.sweep_target(target)
             return None
         parsed = await self._load_incoming(signature, target.address)
         if parsed is None:
@@ -195,22 +196,16 @@ class DepositService:
                     self._logger.exception("house_deposit_alert_failed", txSignature=parsed.signature)
 
     async def sweep_user(self, discord_id: str) -> str | None:
-        if not self._rpc.is_configured:
-            return None
-        try:
-            return await self._rpc.sweep_to_super(self._rpc.player_keypair(discord_id))
-        except Exception:
-            self._logger.exception("deposit_sweep_failed", userId=discord_id)
-            return None
+        return await self._rpc.collect_user_into_super(discord_id)
 
     async def sweep_house(self) -> str | None:
-        if not self._rpc.has_house_wallet or self._rpc.super_address is None:
-            return None
-        try:
-            return await self._rpc.sweep_to_super(self._rpc.house_keypair())
-        except Exception:
-            self._logger.exception("house_sweep_failed")
-            return None
+        return await self._rpc.collect_house_into_super()
+
+    async def sweep_target(self, target: DepositWatchTarget) -> None:
+        if target.is_house:
+            await self.sweep_house()
+        elif target.user_id:
+            await self.sweep_user(target.user_id)
 
     async def parse_signature(self, signature: str, destination: str) -> ParsedIncomingTransfer | None:
         self.require_configured()

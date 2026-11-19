@@ -86,16 +86,3 @@ class BalanceCog(commands.Cog):
                     fiat=fiat,
                     currency=currency,
                 )
-            channel = interaction.channel
-            if isinstance(channel, discord.abc.Messageable):
-                try:
-                    await channel.send(
-                        content=(
-                            f"{member.mention} received "
-                            f"**{self._container.math.format_fiat_symbol(fiat, currency)}** "
-                            f"from {interaction.user.mention}."
-                        ),
-                        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
-                    )
-                except discord.HTTPException:
-                    pass

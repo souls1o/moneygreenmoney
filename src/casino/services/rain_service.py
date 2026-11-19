@@ -9,6 +9,7 @@ from casino.domain.enums import LedgerEntryType, RainStatus, TransactionType
 from casino.domain.records import RainRecord
 from casino.errors import NotFoundError, RainError, ValidationError
 from casino.logging.logger import LogContext, get_logger
+from casino.repositories.game_repository import GameRepository
 from casino.repositories.rain_repository import RainRepository
 from casino.services.balance_service import BalanceService
 from casino.services.price_service import PriceService
@@ -16,7 +17,7 @@ from casino.services.user_service import UserService
 from casino.services.validation_service import ValidationService
 from casino.utils.clock import Clock
 from casino.utils.identifiers import IdentifierFactory
-from casino.utils.money import MathService, SolAmount
+from casino.utils.money import RAIN_JOIN_WAGER_BPS, MathService, SolAmount
 from casino.utils.rng import ProvablyFairService
 
 
@@ -37,6 +38,7 @@ class RainService:
         unit_of_work: UnitOfWorkFactory,
         settings: Settings,
         house_repository,
+        game_repository: GameRepository,
     ) -> None:
         self._rains = rain_repository
         self._users = user_service
@@ -50,6 +52,7 @@ class RainService:
         self._uow = unit_of_work
         self._settings = settings
         self._house = house_repository
+        self._games = game_repository
         self._logger = get_logger("casino.rain")
 
     async def get(self, rain_id: str) -> RainRecord:
@@ -133,6 +136,7 @@ class RainService:
         now = self._clock.now()
         if existing.expires_at is not None and existing.expires_at <= now:
             raise RainError("This rain has already ended.")
+        await self._require_recent_wager(existing, player_id, now)
         with LogContext.bind(userId=player_id, rainId=rain_id):
             claimed = await self._rains.try_add_joiner(rain_id, player_id, now)
             if claimed is None:
@@ -277,6 +281,18 @@ class RainService:
                 joiners=current.joiner_count(),
             )
         return current
+
+    async def _require_recent_wager(self, rain: RainRecord, player_id: str, now) -> None:
+        required = (rain.amount_lamports * RAIN_JOIN_WAGER_BPS) // 10_000
+        wagered = await self._games.sum_player_wagered_since(player_id, now - timedelta(hours=24))
+        if wagered >= required:
+            return
+        needed = rain.amount_fiat * Decimal(RAIN_JOIN_WAGER_BPS) / Decimal(10_000)
+        raise RainError(
+            "You must have wagered at least "
+            f"{self._math.format_fiat_symbol(needed, rain.currency)} "
+            "in the last 24 hours to join this rain."
+        )
 
     def _require_duration(self, seconds: int) -> None:
         minimum = int(self._settings.min_rain_seconds)

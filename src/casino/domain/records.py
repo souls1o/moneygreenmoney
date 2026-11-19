@@ -170,6 +170,10 @@ class GameRecord:
     target_number: int | None = None
     limbo_target: Decimal | None = None
     limbo_result: Decimal | None = None
+    mines_count: int = 0
+    mines_tiles: list[int] = field(default_factory=list)
+    mines_revealed: list[int] = field(default_factory=list)
+    mines_hit: int | None = None
 
     @property
     def bet_amount(self) -> SolAmount:
@@ -205,6 +209,9 @@ class GameRecord:
     def is_limbo(self) -> bool:
         return self.game_type is GameType.LIMBO
 
+    def is_mines(self) -> bool:
+        return self.game_type is GameType.MINES
+
     def current_blackjack_hand(self) -> BlackjackHand | None:
         if not self.blackjack_player_hands:
             return None
@@ -222,6 +229,7 @@ class GameRecord:
             and not self.is_blackjack()
             and not self.is_target()
             and not self.is_limbo()
+            and not self.is_mines()
             and self.status is GameStatus.ACTIVE
         )
 
@@ -251,7 +259,7 @@ class GameRecord:
             return "2v2"
         if self.is_open_ffa():
             return "v".join(["1"] * self.seat_capacity())
-        if self.is_blackjack() or self.is_limbo():
+        if self.is_blackjack() or self.is_limbo() or self.is_mines():
             return "vs House"
         return "1v1"
 
@@ -266,6 +274,8 @@ class GameRecord:
         return "Team 1" if side is CoinSide.HEADS else "Team 2"
 
     def house_game_pnl_fiat(self) -> Decimal:
+        if self.is_limbo() or self.is_mines():
+            return self.player_profit_fiat(HOUSE_USER_ID)
         house_seats = [player_id for player_id in self.player_ids() if is_house_seat(player_id)]
         wagered = self.bet_amount_fiat * Decimal(len(house_seats))
         won = self.winner_gross_share_fiat() * Decimal(len(self.house_winner_ids()))
@@ -404,6 +414,11 @@ class GameRecord:
         stake = self.stake_usd()
         if not self.winner_ids:
             return Decimal("0")
+        if self.is_limbo() or self.is_mines():
+            payout = self._vs_house_payout_fiat()
+            if is_house_seat(player_id):
+                return stake if self.player_won(player_id) else stake - payout
+            return payout - stake if self.player_won(player_id) else -stake
         if not self.player_won(player_id):
             return -stake
         winners = max(len(self.winner_ids), 1)
@@ -413,6 +428,15 @@ class GameRecord:
             pot = stake * Decimal(max(len(self.player_ids()), 1))
             payout = (pot - self.house_fee_usd) / Decimal(winners)
         return payout - stake
+
+    def _vs_house_payout_fiat(self) -> Decimal:
+        if self.bet_amount_lamports <= 0:
+            return Decimal("0")
+        return (
+            self.stake_usd()
+            * Decimal(int(self.winner_payout_lamports))
+            / Decimal(self.bet_amount_lamports)
+        )
 
     def player_profit_lamports(self, player_id: str) -> int:
         stake = self.wager_for(player_id).lamports
@@ -432,7 +456,7 @@ class GameRecord:
         return bool(humans) and humans <= set(self.ready_ids)
 
     def can_start(self) -> bool:
-        if self.is_target() or self.is_limbo():
+        if self.is_target() or self.is_limbo() or self.is_mines():
             return False
         return self.is_full() and self.all_humans_ready() and not self.is_awaiting_rematch_accepts()
 
@@ -491,7 +515,7 @@ class GuildConfigRecord:
             return self.blackjack_outcomes_channel_id
         if game_type is GameType.TARGET:
             return self.target_outcomes_channel_id
-        if game_type is GameType.LIMBO:
+        if game_type is GameType.LIMBO or game_type is GameType.MINES:
             return self.blackjack_outcomes_channel_id
         if game_type is GameType.JACKPOT:
             return self.jackpot_history_channel_id
@@ -504,7 +528,7 @@ class GuildConfigRecord:
             return None
         if game_type is GameType.TARGET:
             return None
-        if game_type is GameType.LIMBO:
+        if game_type is GameType.LIMBO or game_type is GameType.MINES:
             return None
         return self.open_coinflip_channel_id or self.open_games_channel_id
 
