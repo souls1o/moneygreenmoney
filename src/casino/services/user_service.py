@@ -38,6 +38,9 @@ class UserService:
     async def list_deposit_wallets(self) -> list[tuple[str, str]]:
         return await self._users.list_deposit_wallets()
 
+    async def list_positive_balances(self) -> list[UserRecord]:
+        return await self._users.list_positive_balances()
+
     async def get_or_create(self, discord_id: str) -> UserRecord:
         existing = await self._users.find_by_discord_id(discord_id)
         if existing is not None:

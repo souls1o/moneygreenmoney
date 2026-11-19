@@ -53,7 +53,7 @@ class HouseStatsCalculator:
         sol_price_usd: Decimal,
         now: datetime,
         windows: Sequence[HouseStatWindow] = HOUSE_STAT_WINDOWS,
-        super_wallet_lamports: int = 0,
+        house_wallet_lamports: int = 0,
     ) -> HouseStatsReport:
         aware_now = self._require_utc(now)
         pool = treasury.pool_shares()
@@ -65,7 +65,7 @@ class HouseStatsCalculator:
         )
         return HouseStatsReport(
             house_balance_lamports=treasury.sol_balance_lamports,
-            super_wallet_lamports=super_wallet_lamports,
+            house_wallet_lamports=house_wallet_lamports,
             lifetime_fees_lamports=treasury.total_fees_collected_lamports,
             open_tables=open_tables,
             sol_price_usd=sol_price_usd,
@@ -168,14 +168,14 @@ class HouseStatsService:
             treasury=treasury,
             sol_price_usd=quote.sol_price("USD"),
             now=self._clock.now(),
-            super_wallet_lamports=await self._super_wallet_balance(),
+            house_wallet_lamports=await self._house_wallet_balance(),
         )
 
-    async def _super_wallet_balance(self) -> int:
-        if self._rpc is None or not self._rpc.super_address:
+    async def _house_wallet_balance(self) -> int:
+        if self._rpc is None or not self._rpc.house_address:
             return 0
         try:
-            return await self._rpc.get_balance(self._rpc.super_address)
+            return await self._rpc.get_balance(self._rpc.house_address)
         except Exception:
-            self._logger.exception("super_wallet_balance_failed")
+            self._logger.exception("house_wallet_balance_failed")
             return 0

@@ -52,7 +52,6 @@ class DepositMonitorWorker:
                 if self._rpc_gap:
                     await asyncio.sleep(self._rpc_gap)
                 await self._tick_target(target)
-            await self._deposits.sweep_house()
         except (SolanaRpcException, SolanaRpcUnavailableError, TypeError, AttributeError) as exc:
             self._cooldown_until = now + RPC_BACKOFF
             cause = getattr(exc, "__cause__", None)
@@ -105,4 +104,3 @@ class DepositMonitorWorker:
                         "deposit_signature_failed", txSignature=signature, address=target.address
                     )
             await self._cursors.set(cursor_name, newest_first[0], self._clock.now())
-        await self._deposits.sweep_target(target)

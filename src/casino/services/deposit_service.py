@@ -25,7 +25,7 @@ class DepositWatchTarget:
 
 
 class DepositService:
-    """Credit deposits by destination address, then sweep SOL into the super wallet."""
+    """Credit deposits by destination address. SOL stays in that wallet until a game or withdrawal."""
 
     def __init__(
         self,
@@ -64,15 +64,12 @@ class DepositService:
     def require_configured(self) -> None:
         if not self._rpc.is_configured:
             raise FeatureDisabledError(
-                "On-chain deposits are disabled until DEPOSIT_MASTER_SECRET and "
-                "SUPER_WALLET_PRIVATE_KEY are set."
+                "On-chain deposits are disabled until SOLANA_PRIVATE_KEY and "
+                "DEPOSIT_MASTER_SECRET are set."
             )
 
     def house_address(self) -> str | None:
         return self._rpc.house_address
-
-    def super_address(self) -> str | None:
-        return self._rpc.super_address
 
     async def watch_targets(self) -> list[DepositWatchTarget]:
         targets: list[DepositWatchTarget] = []
@@ -88,14 +85,12 @@ class DepositService:
     async def ingest_signature(self, signature: str, target: DepositWatchTarget) -> UserRecord | None:
         existing = await self._transactions.find_by_signature(signature)
         if existing is not None:
-            await self.sweep_target(target)
             return None
         parsed = await self._load_incoming(signature, target.address)
         if parsed is None:
             return None
         if target.is_house:
             await self.credit_house(parsed)
-            await self.sweep_house()
             return None
         user = await self._users.get_by_deposit_address(target.address)
         if user is None:
@@ -109,7 +104,6 @@ class DepositService:
             credited = await self.credit_parsed(user, parsed)
         except AlreadyProcessedError:
             credited = user
-        await self.sweep_user(user.discord_id)
         return credited
 
     async def credit_parsed(self, user: UserRecord, parsed: ParsedIncomingTransfer) -> UserRecord:
@@ -194,18 +188,6 @@ class DepositService:
                     await self._on_house_credited(parsed, usd_price)
                 except Exception:
                     self._logger.exception("house_deposit_alert_failed", txSignature=parsed.signature)
-
-    async def sweep_user(self, discord_id: str) -> str | None:
-        return await self._rpc.collect_user_into_super(discord_id)
-
-    async def sweep_house(self) -> str | None:
-        return await self._rpc.collect_house_into_super()
-
-    async def sweep_target(self, target: DepositWatchTarget) -> None:
-        if target.is_house:
-            await self.sweep_house()
-        elif target.user_id:
-            await self.sweep_user(target.user_id)
 
     async def parse_signature(self, signature: str, destination: str) -> ParsedIncomingTransfer | None:
         self.require_configured()

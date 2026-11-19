@@ -26,6 +26,7 @@ from casino.repositories.transaction_repository import TransactionRepository
 from casino.repositories.user_repository import UserRepository
 from casino.services.admin_service import AdminService
 from casino.services.affiliate_service import AffiliateService
+from casino.services.custody_service import CustodyService
 from casino.services.balance_service import BalanceService
 from casino.services.deposit_service import DepositService
 from casino.services.game_service import GameService
@@ -169,6 +170,7 @@ class ContainerFactory:
         cursor_repo = CursorRepository(mongo, mapper)
         lock_repo = LockRepository(mongo)
         rate_repo = RateLimitRepository(mongo)
+        jackpots_repo = JackpotRepository(mongo, mapper)
 
         ledger = LedgerService(ledger_repo, identifiers, clock)
         balances = BalanceService(users_repo, tx_repo, house_repo, ledger, identifiers, clock)
@@ -182,7 +184,8 @@ class ContainerFactory:
             Decimal(settings.max_invest_usd),
         )
         fair = ProvablyFairService()
-        affiliates = AffiliateService(users_repo, users, balances, clock)
+        custody = CustodyService(solana)
+        affiliates = AffiliateService(users_repo, users, balances, clock, custody=custody)
         games = GameService(
             games_repo,
             users_repo,
@@ -198,6 +201,8 @@ class ContainerFactory:
             settings,
             house_repo,
             affiliates,
+            jackpot_repository=jackpots_repo,
+            custody=custody,
         )
         guild_configs = GuildConfigService(guild_config_repo, clock)
         verification = VerificationService(clock)
@@ -214,6 +219,7 @@ class ContainerFactory:
             uow,
             settings,
             house_stats,
+            custody=custody,
         )
         deposits = DepositService(
             users,
@@ -261,9 +267,9 @@ class ContainerFactory:
             settings,
             house_repo,
             games_repo,
+            custody=custody,
         )
         rain_worker = RainExpiryWorker(rains)
-        jackpots_repo = JackpotRepository(mongo, mapper)
         jackpots = JackpotService(
             jackpots_repo,
             users,
@@ -278,6 +284,7 @@ class ContainerFactory:
             uow,
             settings,
             house_repo,
+            custody=custody,
         )
         jackpot_worker = JackpotWorker(jackpots)
         tickets = TicketService(
@@ -286,7 +293,7 @@ class ContainerFactory:
             identifiers,
             clock,
         )
-        tips = TipService(users, balances, price, uow)
+        tips = TipService(users, balances, price, uow, custody=custody)
 
         return AppContainer(
             settings=settings,

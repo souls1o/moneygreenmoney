@@ -92,7 +92,7 @@ class TestHouseStatsCalculator:
             now=now,
         )
         assert report.house_balance_lamports == 5_000_000_000
-        assert report.super_wallet_lamports == 0
+        assert report.house_wallet_lamports == 0
         assert report.open_tables == 2
         by_label = {window.label: window for window in report.timeframes}
 
@@ -149,16 +149,16 @@ async def test_house_stats_service_reads_treasury_and_games() -> None:
         )
     )
     class StubRpc:
-        super_address = "Super11111111111111111111111111111111112"
+        house_address = "House11111111111111111111111111111111112"
 
         async def get_balance(self, address: str) -> int:
-            assert address == self.super_address
+            assert address == self.house_address
             return SolAmount.parse("7.5").lamports
 
     service = HouseStatsService(games, house, StubPriceService(Decimal("100")), clock, StubRpc())  # type: ignore[arg-type]
     report = await service.snapshot()
     assert report.house_balance_lamports == SolAmount.parse("3").lamports
-    assert report.super_wallet_lamports == SolAmount.parse("7.5").lamports
+    assert report.house_wallet_lamports == SolAmount.parse("7.5").lamports
     assert report.open_tables == 1
     all_time = report.timeframes[-1]
     assert all_time.label == "All time"

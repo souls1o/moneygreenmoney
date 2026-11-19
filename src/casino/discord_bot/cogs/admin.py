@@ -113,7 +113,7 @@ class AdminCog(commands.Cog):
             ).send_kwargs(ephemeral=True)
         )
 
-    @app_commands.command(name="housestats", description="Show house balance, super wallet, and timeframe stats")
+    @app_commands.command(name="housestats", description="Show house book, house wallet, and timeframe stats")
     @app_commands.default_permissions(administrator=True)
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)

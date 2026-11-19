@@ -212,6 +212,9 @@ class GameRecord:
     def is_mines(self) -> bool:
         return self.game_type is GameType.MINES
 
+    def is_jackpot(self) -> bool:
+        return self.game_type is GameType.JACKPOT
+
     def current_blackjack_hand(self) -> BlackjackHand | None:
         if not self.blackjack_player_hands:
             return None
@@ -261,6 +264,9 @@ class GameRecord:
             return "v".join(["1"] * self.seat_capacity())
         if self.is_blackjack() or self.is_limbo() or self.is_mines():
             return "vs House"
+        if self.is_jackpot():
+            count = max(len(self.player_ids()), 1)
+            return f"{count}p"
         return "1v1"
 
     def side_of(self, player_id: str) -> CoinSide | None:
@@ -414,7 +420,7 @@ class GameRecord:
         stake = self.stake_usd()
         if not self.winner_ids:
             return Decimal("0")
-        if self.is_limbo() or self.is_mines():
+        if self.is_limbo() or self.is_mines() or self.is_jackpot():
             payout = self._vs_house_payout_fiat()
             if is_house_seat(player_id):
                 return stake if self.player_won(player_id) else stake - payout
@@ -708,7 +714,7 @@ class TimeframeStats:
 @dataclass(frozen=True, slots=True)
 class HouseStatsReport:
     house_balance_lamports: int
-    super_wallet_lamports: int
+    house_wallet_lamports: int
     lifetime_fees_lamports: int
     open_tables: int
     sol_price_usd: Decimal

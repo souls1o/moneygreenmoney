@@ -20,6 +20,7 @@ from tests.conftest import FixedRandomService, FrozenClock, StubPriceService, St
 from tests.fakes import (
     MemoryGameRepository,
     MemoryHouseRepository,
+    MemoryJackpotRepository,
     MemoryLedgerRepository,
     MemoryTransactionRepository,
     MemoryUserRepository,
@@ -37,6 +38,7 @@ class GameHarness:
         self.ledger_repo = MemoryLedgerRepository()
         self.tx_repo = MemoryTransactionRepository()
         self.house_repo = MemoryHouseRepository()
+        self.jackpots_repo = MemoryJackpotRepository()
         ledger = LedgerService(self.ledger_repo, self.ids, self.clock)
         balances = BalanceService(
             self.users_repo, self.tx_repo, self.house_repo, ledger, self.ids, self.clock
@@ -57,6 +59,7 @@ class GameHarness:
             NullUnitOfWorkFactory(),
             settings,  # type: ignore[arg-type]
             self.house_repo,
+            jackpot_repository=self.jackpots_repo,
         )
 
     def seed_user(self, discord_id: str, sol: str = "10", currency: str = "USD") -> UserRecord:

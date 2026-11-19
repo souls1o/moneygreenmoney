@@ -27,8 +27,6 @@ async def test_deposit_worker_stops_and_backs_off_after_rpc_failure() -> None:
                 DepositWatchTarget(address="addr2", user_id="2"),
             ]
         ),
-        sweep_house=AsyncMock(return_value=None),
-        sweep_target=AsyncMock(return_value=None),
     )
     rpc = SimpleNamespace(is_configured=True, get_signatures=get_signatures)
     cursors = SimpleNamespace(get=AsyncMock(return_value=None))
@@ -53,11 +51,7 @@ async def test_deposit_worker_round_robins_wallets() -> None:
         return []
 
     users = [DepositWatchTarget(address=f"u{i}", user_id=str(i)) for i in range(6)]
-    deposits = SimpleNamespace(
-        watch_targets=AsyncMock(return_value=users),
-        sweep_house=AsyncMock(return_value=None),
-        sweep_target=AsyncMock(return_value=None),
-    )
+    deposits = SimpleNamespace(watch_targets=AsyncMock(return_value=users))
     rpc = SimpleNamespace(is_configured=True, get_signatures=get_signatures)
     cursors = SimpleNamespace(get=AsyncMock(return_value=None), set=AsyncMock())
     settings = SimpleNamespace(deposit_wallets_per_tick=2, deposit_rpc_gap_seconds=0)
@@ -80,8 +74,6 @@ async def test_deposit_worker_skips_known_signatures_without_tx_fetch() -> None:
     deposits = SimpleNamespace(
         watch_targets=AsyncMock(return_value=[DepositWatchTarget(address="addr1", user_id="1")]),
         ingest_signature=ingest_signature,
-        sweep_house=AsyncMock(return_value=None),
-        sweep_target=AsyncMock(return_value=None),
     )
 
     async def get_signatures(*_args, **_kwargs):
@@ -94,18 +86,15 @@ async def test_deposit_worker_skips_known_signatures_without_tx_fetch() -> None:
     await worker.tick()
     assert parsed["n"] == 1
     cursors.set.assert_awaited()
-    deposits.sweep_house.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_deposit_worker_sweeps_house_when_there_are_no_new_signatures() -> None:
+async def test_deposit_worker_polls_even_when_there_are_no_new_signatures() -> None:
     clock = FrozenClock()
     deposits = SimpleNamespace(
         watch_targets=AsyncMock(
             return_value=[DepositWatchTarget(address="house", is_house=True, user_id="house")]
         ),
-        sweep_house=AsyncMock(return_value="sweep-sig"),
-        sweep_target=AsyncMock(return_value=None),
     )
 
     async def get_signatures(*_args, **_kwargs):
@@ -115,25 +104,4 @@ async def test_deposit_worker_sweeps_house_when_there_are_no_new_signatures() ->
     cursors = SimpleNamespace(get=AsyncMock(return_value=None), set=AsyncMock())
     worker = DepositMonitorWorker(deposits, rpc, cursors, clock)  # type: ignore[arg-type]
     await worker.tick()
-    deposits.sweep_house.assert_awaited_once()
-    deposits.sweep_target.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_deposit_worker_sweeps_user_when_there_are_no_new_signatures() -> None:
-    clock = FrozenClock()
-    target = DepositWatchTarget(address="player", user_id="1")
-    deposits = SimpleNamespace(
-        watch_targets=AsyncMock(return_value=[target]),
-        sweep_house=AsyncMock(return_value=None),
-        sweep_target=AsyncMock(return_value=None),
-    )
-
-    async def get_signatures(*_args, **_kwargs):
-        return []
-
-    rpc = SimpleNamespace(is_configured=True, get_signatures=get_signatures)
-    cursors = SimpleNamespace(get=AsyncMock(return_value=None), set=AsyncMock())
-    worker = DepositMonitorWorker(deposits, rpc, cursors, clock)  # type: ignore[arg-type]
-    await worker.tick()
-    deposits.sweep_target.assert_awaited_once_with(target)
+    deposits.watch_targets.assert_awaited_once()

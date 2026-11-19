@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from casino.config.settings import Settings
@@ -23,6 +23,7 @@ from casino.domain.records import (
     DiceTurnEvent,
     GameRecord,
     HOUSE_USER_ID,
+    JackpotRecord,
     PlayerProfileStats,
     is_house_seat,
 )
@@ -38,9 +39,11 @@ from casino.errors import GameError, InsufficientHouseReserveError, NotFoundErro
 from casino.logging.logger import LogContext, get_logger
 from casino.repositories.game_repository import GameRepository
 from casino.repositories.house_repository import HouseRepository
+from casino.repositories.jackpot_repository import JackpotRepository
 from casino.repositories.user_repository import UserRepository
 from casino.services.affiliate_service import AffiliateService
 from casino.services.balance_service import BalanceService
+from casino.services.custody_service import CustodyService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.services.validation_service import ValidationService
@@ -69,6 +72,8 @@ class GameService:
         settings: Settings,
         house_repository: HouseRepository,
         affiliates: AffiliateService | None = None,
+        jackpot_repository: JackpotRepository | None = None,
+        custody: CustodyService | None = None,
     ) -> None:
         self._games = game_repository
         self._users = user_repository
@@ -83,8 +88,10 @@ class GameService:
         self._uow = unit_of_work
         self._settings = settings
         self._house = house_repository
+        self._jackpots = jackpot_repository
+        self._custody = custody or CustodyService()
         self._affiliates = affiliates or AffiliateService(
-            user_repository, user_service, balance_service, clock
+            user_repository, user_service, balance_service, clock, custody=self._custody
         )
         self._logger = get_logger("casino.game")
 
@@ -551,13 +558,12 @@ class GameService:
         page: int = 0,
         limit: int = 10,
     ) -> tuple[list[GameRecord], int]:
-        total = await self._games.count_completed_by_player(discord_id)
+        games = await self._completed_history_games(discord_id)
         skip = max(page, 0) * limit
-        games = await self._games.list_by_player(discord_id, limit=limit, skip=skip)
-        return games, total
+        return games[skip : skip + limit], len(games)
 
     async def profile_stats(self, discord_id: str) -> PlayerProfileStats:
-        games = await self._games.list_completed_by_player(discord_id)
+        games = await self._completed_history_games(discord_id)
         if not games:
             return PlayerProfileStats()
         wagered_usd = Decimal("0")
@@ -573,9 +579,9 @@ class GameService:
             profit_lamports += game.player_profit_lamports(discord_id)
             if game.player_won(discord_id):
                 wins += 1
-            label = "Dice" if game.is_dice() else "Coinflip"
+            label = game.game_type.value.title()
             counts[label] = counts.get(label, 0) + 1
-        favorite = max(counts, key=lambda name: (counts[name], name == "Coinflip"))
+        favorite = max(counts, key=lambda name: (counts[name], name))
         return PlayerProfileStats(
             games_played=len(games),
             games_won=wins,
@@ -585,6 +591,54 @@ class GameService:
             profit_lamports=profit_lamports,
             favorite_game=favorite,
         )
+
+    async def _completed_history_games(self, discord_id: str) -> list[GameRecord]:
+        games = list(await self._games.list_completed_by_player(discord_id))
+        if self._jackpots is not None:
+            for jackpot in await self._jackpots.list_completed_by_player(discord_id):
+                games.append(await self._jackpot_as_history_game(jackpot, discord_id))
+        games.sort(key=self._history_sort_key, reverse=True)
+        return games
+
+    async def _jackpot_as_history_game(self, jackpot: JackpotRecord, discord_id: str) -> GameRecord:
+        stake = int(jackpot.entries_lamports.get(discord_id, 0))
+        stake_usd = await self._usd_for_lamports(stake)
+        winner_ids = [jackpot.winner_id] if jackpot.winner_id else []
+        return GameRecord(
+            game_id=jackpot.jackpot_id,
+            status=GameStatus.COMPLETED,
+            creator_id=jackpot.opener_id or discord_id,
+            bet_amount_lamports=stake,
+            currency="USD",
+            bet_amount_fiat=stake_usd,
+            bet_amount_usd=stake_usd,
+            player_wager_lamports=dict(jackpot.entries_lamports),
+            game_type=GameType.JACKPOT,
+            heads_ids=list(jackpot.entries_lamports),
+            winner_id=jackpot.winner_id,
+            winner_ids=winner_ids,
+            winner_payout_lamports=int(jackpot.winner_payout_lamports),
+            per_winner_payout_lamports=int(jackpot.winner_payout_lamports),
+            house_fee_lamports=int(jackpot.house_fee_lamports),
+            max_players=max(len(jackpot.entries_lamports), 1),
+            resolved_at=jackpot.resolved_at or jackpot.created_at,
+            created_at=jackpot.created_at,
+        )
+
+    async def _usd_for_lamports(self, lamports: int) -> Decimal:
+        if lamports <= 0:
+            return Decimal("0")
+        quote = await self._prices.get_quote(allow_stale=True)
+        return self._math.sol_to_fiat(SolAmount.from_lamports(lamports), quote.sol_price("USD"))
+
+    @staticmethod
+    def _history_sort_key(game: GameRecord) -> datetime:
+        moment = game.resolved_at or game.created_at
+        if moment is None:
+            return datetime.min.replace(tzinfo=UTC)
+        if moment.tzinfo is None:
+            return moment.replace(tzinfo=UTC)
+        return moment
 
     async def attach_listing(self, game_id: str, channel_id: str, message_id: str) -> None:
         await self._games.set_listing_ref(game_id, channel_id, message_id)
@@ -1044,6 +1098,7 @@ class GameService:
         delay = self._settings.table_idle_delete_seconds
         if game.private_channel_id:
             game.channel_delete_at = now + timedelta(seconds=delay)
+        await self._custody.settle_game(game)
         self._logger.info(
             "game_resolved",
             winnerIds=winners,
@@ -1437,6 +1492,7 @@ class GameService:
         game.per_winner_payout_lamports = player_payout.lamports
         game.resolved_at = now
         game.expires_at = None
+        await self._custody.settle_game(game)
         self._logger.info(
             "game_resolved",
             winnerIds=game.winner_ids,
@@ -1606,6 +1662,7 @@ class GameService:
         game.resolved_at = now
         game.expires_at = None
         game.auto_flip_at = None
+        await self._custody.settle_game(game)
         self._logger.info(
             "game_resolved",
             winnerIds=game.winner_ids,
@@ -1779,6 +1836,7 @@ class GameService:
         game.resolved_at = now
         game.expires_at = None
         game.auto_flip_at = None
+        await self._custody.settle_game(game)
         self._logger.info(
             "game_resolved",
             winnerIds=game.winner_ids,

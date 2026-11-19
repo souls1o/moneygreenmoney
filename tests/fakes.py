@@ -49,6 +49,9 @@ class MemoryUserRepository:
             if user.deposit_address
         ]
 
+    async def list_positive_balances(self, session=None) -> list[UserRecord]:
+        return [self._clone(user) for user in self.users.values() if user.sol_balance_lamports > 0]
+
     async def insert(self, user: UserRecord, session=None) -> None:
         self.users[user.discord_id] = user
 
@@ -671,6 +674,19 @@ class MemoryJackpotRepository:
             and jackpot.reveal_until is not None
             and jackpot.reveal_until <= now
         ]
+
+    async def list_completed_by_player(self, discord_id: str) -> list[JackpotRecord]:
+        matches = [
+            self._clone(jackpot)
+            for jackpot in self.items.values()
+            if jackpot.status in {JackpotStatus.COMPLETED, JackpotStatus.REFUNDED}
+            and discord_id in jackpot.entries_lamports
+        ]
+        matches.sort(
+            key=lambda jackpot: jackpot.resolved_at or jackpot.created_at or datetime.min,
+            reverse=True,
+        )
+        return matches
 
     async def list_live(self, session=None) -> list[JackpotRecord]:
         return [

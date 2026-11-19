@@ -22,6 +22,7 @@ from casino.logging.logger import get_logger
 from casino.repositories.house_repository import HouseRepository
 from casino.repositories.user_repository import UserRepository
 from casino.services.balance_service import BalanceService
+from casino.services.custody_service import CustodyService
 from casino.services.house_stats_service import HouseStatsService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
@@ -46,6 +47,7 @@ class InvestorService:
         unit_of_work: UnitOfWorkFactory,
         settings: Settings,
         house_stats: HouseStatsService | None = None,
+        custody: CustodyService | None = None,
     ) -> None:
         self._users = user_service
         self._user_repo = user_repository
@@ -58,6 +60,7 @@ class InvestorService:
         self._uow = unit_of_work
         self._settings = settings
         self._house_stats = house_stats
+        self._custody = custody or CustodyService()
         self._logger = get_logger("casino.investor")
 
     async def position(self, user_id: str) -> InvestorPosition:
@@ -107,6 +110,7 @@ class InvestorService:
                 user_id, minted, self._clock.now(), session=uow.session
             )
             treasury = await self._house.get(session=uow.session)
+        await self._custody.player_to_house(user_id, amount)
         handle, ev = await self._forecast()
         self._logger.info(
             "investor_deposit",
@@ -161,6 +165,7 @@ class InvestorService:
                 user_id, burned, self._clock.now(), session=uow.session
             )
             treasury = await self._house.get(session=uow.session)
+        await self._custody.house_to_player(user_id, payout)
         handle, ev = await self._forecast()
         self._logger.info(
             "investor_withdraw",

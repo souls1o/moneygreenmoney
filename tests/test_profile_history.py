@@ -6,8 +6,8 @@ from decimal import Decimal
 import pytest
 
 from casino.discord_bot.presentation.embeds import EmbedFactory
-from casino.domain.enums import CoinSide, GameMode, GameStatus, GameType
-from casino.domain.records import GameRecord
+from casino.domain.enums import CoinSide, GameMode, GameStatus, GameType, JackpotStatus
+from casino.domain.records import HOUSE_USER_ID, GameRecord, JackpotRecord
 from casino.utils.money import MathService
 from tests.conftest import StubSettings
 from tests.test_game_service import GameHarness
@@ -42,7 +42,7 @@ def _completed(
         heads_ids=heads,
         tails_ids=tails,
         winner_ids=winners,
-        winner_id=winners[0],
+        winner_id=winners[0] if winners else None,
         house_fee_usd=fee,
         max_players=max_players,
         resolved_at=resolved_at,
@@ -94,6 +94,143 @@ def test_history_line_format() -> None:
     assert factory._history_line(win, "2", 1) == "1. ❌ Coinflip 1v1 -$5.00"
     assert factory._history_line(loss, "1", 2) == "2. ❌ Dice 1v1v1 -$5.00"
     assert factory._history_line(team, "1", 3) == "3. ✅ Coinflip 2v2 +$4.70"
+    blackjack = _completed(
+        game_id="bj1",
+        winners=["1"],
+        game_type=GameType.BLACKJACK,
+        heads=["1"],
+        tails=[HOUSE_USER_ID],
+        resolved_at=datetime(2026, 1, 4, tzinfo=UTC),
+        fee=Decimal("0"),
+    )
+    limbo = _completed(
+        game_id="lb1",
+        winners=["1"],
+        game_type=GameType.LIMBO,
+        heads=["1"],
+        tails=[HOUSE_USER_ID],
+        resolved_at=datetime(2026, 1, 5, tzinfo=UTC),
+        fee=Decimal("0"),
+    )
+    limbo.limbo_target = Decimal("2.00")
+    limbo.winner_payout_lamports = 100_000_000
+    mines = _completed(
+        game_id="mn1",
+        winners=[HOUSE_USER_ID],
+        game_type=GameType.MINES,
+        heads=["1"],
+        tails=[HOUSE_USER_ID],
+        resolved_at=datetime(2026, 1, 6, tzinfo=UTC),
+        fee=Decimal("0"),
+    )
+    mines.mines_count = 3
+    target = _completed(
+        game_id="tg1",
+        winners=["1"],
+        game_type=GameType.TARGET,
+        max_players=3,
+        heads=["1", "2", "3"],
+        tails=[],
+        resolved_at=datetime(2026, 1, 7, tzinfo=UTC),
+        fee=Decimal("0.45"),
+    )
+    jackpot = GameRecord(
+        game_id="jp1",
+        status=GameStatus.COMPLETED,
+        creator_id="1",
+        bet_amount_lamports=50_000_000,
+        currency="USD",
+        bet_amount_fiat=Decimal("5"),
+        bet_amount_usd=Decimal("5"),
+        game_type=GameType.JACKPOT,
+        heads_ids=["1", "2"],
+        winner_ids=["1"],
+        winner_id="1",
+        winner_payout_lamports=97_000_000,
+        per_winner_payout_lamports=97_000_000,
+        resolved_at=datetime(2026, 1, 8, tzinfo=UTC),
+        max_players=2,
+    )
+    push = _completed(
+        game_id="bj2",
+        winners=[],
+        game_type=GameType.BLACKJACK,
+        heads=["1"],
+        tails=[HOUSE_USER_ID],
+        resolved_at=datetime(2026, 1, 9, tzinfo=UTC),
+        fee=Decimal("0"),
+    )
+    assert factory._history_line(blackjack, "1", 4) == "4. ✅ Blackjack vs House +$5.00"
+    assert factory._history_line(limbo, "1", 5) == "5. ✅ Limbo 2.00x vs House +$5.00"
+    assert factory._history_line(mines, "1", 6) == "6. ❌ Mines 3 vs House -$5.00"
+    assert factory._history_line(target, "1", 7) == "7. ✅ Target 1v1v1 +$9.55"
+    assert factory._history_line(jackpot, "1", 8) == "8. ✅ Jackpot 2p +$4.70"
+    assert factory._history_line(push, "1", 9) == "9. ➖ Blackjack vs House +$0.00"
+
+
+@pytest.mark.asyncio
+async def test_history_includes_all_casino_games() -> None:
+    harness = GameHarness()
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    specs = [
+        (GameType.BLACKJACK, ["1"], [HOUSE_USER_ID], 2, Decimal("0")),
+        (GameType.LIMBO, ["1"], [HOUSE_USER_ID], 2, Decimal("0")),
+        (GameType.MINES, ["1"], [HOUSE_USER_ID], 2, Decimal("0")),
+        (GameType.TARGET, ["1", "2", "3"], [], 3, Decimal("0.45")),
+        (GameType.DICE, ["1", "2"], [], 2, Decimal("0.30")),
+        (GameType.COINFLIP, ["1"], ["2"], 2, Decimal("0.30")),
+    ]
+    for index, (game_type, heads, tails, max_players, fee) in enumerate(specs):
+        game = _completed(
+            game_id=f"g{index}",
+            winners=["1"],
+            game_type=game_type,
+            heads=heads,
+            tails=tails,
+            max_players=max_players,
+            resolved_at=now + timedelta(minutes=index),
+            fee=fee,
+        )
+        if game_type is GameType.LIMBO:
+            game.limbo_target = Decimal("2.00")
+            game.winner_payout_lamports = 100_000_000
+        if game_type is GameType.MINES:
+            game.mines_count = 3
+            game.winner_payout_lamports = 50_000_000
+        harness.games_repo.games[game.game_id] = game
+    harness.jackpots_repo.items["jp1"] = JackpotRecord(
+        jackpot_id="jp1",
+        status=JackpotStatus.COMPLETED,
+        guild_id="99",
+        opener_id="1",
+        entries_lamports={"1": 50_000_000, "2": 50_000_000},
+        winner_id="1",
+        winner_payout_lamports=97_000_000,
+        resolved_at=now + timedelta(minutes=10),
+    )
+    games, total = await harness.service.history_for("1", page=0, limit=20)
+    assert total == 7
+    assert {game.game_type for game in games} == {
+        GameType.BLACKJACK,
+        GameType.LIMBO,
+        GameType.MINES,
+        GameType.TARGET,
+        GameType.DICE,
+        GameType.COINFLIP,
+        GameType.JACKPOT,
+    }
+    stats = await harness.service.profile_stats("1")
+    assert stats.games_played == 7
+    factory = EmbedFactory(_Container())  # type: ignore[arg-type]
+    text = "\n".join(
+        factory._history_line(game, "1", total - index) for index, game in enumerate(games)
+    )
+    assert "Blackjack vs House" in text
+    assert "Limbo 2.00x vs House" in text
+    assert "Mines 3 vs House" in text
+    assert "Target 1v1v1" in text
+    assert "Jackpot 2p" in text
+    assert games[0].game_type is GameType.JACKPOT
 
 
 @pytest.mark.asyncio

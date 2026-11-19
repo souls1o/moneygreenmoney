@@ -8,6 +8,7 @@ from casino.domain.records import UserRecord
 from casino.errors import ValidationError
 from casino.logging.logger import LogContext, get_logger
 from casino.services.balance_service import BalanceService
+from casino.services.custody_service import CustodyService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.utils.money import SolAmount
@@ -27,11 +28,13 @@ class TipService:
         balance_service: BalanceService,
         price_service: PriceService,
         unit_of_work: UnitOfWorkFactory,
+        custody: CustodyService | None = None,
     ) -> None:
         self._users = user_service
         self._balances = balance_service
         self._prices = price_service
         self._uow = unit_of_work
+        self._custody = custody or CustodyService()
         self._logger = get_logger("casino.tip")
 
     async def send(self, sender_id: str, recipient_id: str, amount: SolAmount) -> TipResult:
@@ -63,6 +66,7 @@ class TipService:
                     description=f"Tip from {sender_id}",
                     session=uow.session,
                 )
+            await self._custody.player_to_player(sender_id, recipient_id, amount)
             self._logger.info(
                 "tip_sent",
                 recipientId=recipient_id,

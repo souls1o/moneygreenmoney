@@ -16,6 +16,7 @@ from casino.errors import AffiliateError
 from casino.logging.logger import get_logger
 from casino.repositories.user_repository import UserRepository
 from casino.services.balance_service import BalanceService
+from casino.services.custody_service import CustodyService
 from casino.services.user_service import UserService
 from casino.utils.clock import Clock
 from casino.utils.money import SolAmount
@@ -30,11 +31,13 @@ class AffiliateService:
         user_service: UserService,
         balance_service: BalanceService,
         clock: Clock,
+        custody: CustodyService | None = None,
     ) -> None:
         self._users = user_repository
         self._user_service = user_service
         self._balances = balance_service
         self._clock = clock
+        self._custody = custody or CustodyService()
         self._logger = get_logger("casino.affiliate")
 
     async def bind(self, user_id: str, referrer_id: str) -> UserRecord:
@@ -142,6 +145,7 @@ class AffiliateService:
             )
             ledger_ids.append(house_entry.entry_id)
             ledger_ids.append(credit.ledger_entry.entry_id)
+            await self._custody.house_to_player(affiliate_id, amount)
             self._logger.info(
                 "affiliate_paid",
                 affiliateId=affiliate_id,

@@ -12,6 +12,7 @@ from casino.logging.logger import LogContext, get_logger
 from casino.repositories.game_repository import GameRepository
 from casino.repositories.rain_repository import RainRepository
 from casino.services.balance_service import BalanceService
+from casino.services.custody_service import CustodyService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.services.validation_service import ValidationService
@@ -39,6 +40,7 @@ class RainService:
         settings: Settings,
         house_repository,
         game_repository: GameRepository,
+        custody: CustodyService | None = None,
     ) -> None:
         self._rains = rain_repository
         self._users = user_service
@@ -53,6 +55,7 @@ class RainService:
         self._settings = settings
         self._house = house_repository
         self._games = game_repository
+        self._custody = custody or CustodyService()
         self._logger = get_logger("casino.rain")
 
     async def get(self, rain_id: str) -> RainRecord:
@@ -275,6 +278,10 @@ class RainService:
                 replaced = await self._rains.replace(current, session=uow.session)
                 if not replaced:
                     raise RainError("The rain could not be settled due to a concurrent update.")
+            if current.status is RainStatus.COMPLETED:
+                for player_id, lamports in current.payouts_lamports.items():
+                    share = SolAmount.from_lamports(lamports)
+                    await self._custody.player_to_player(current.creator_id, player_id, share)
             self._logger.info(
                 "rain_settled",
                 status=current.status.value,

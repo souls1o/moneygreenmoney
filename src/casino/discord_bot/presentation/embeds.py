@@ -115,10 +115,10 @@ class EmbedFactory:
         return self.builder(
             "Deposits unavailable",
             description=(
-                "On-chain deposits need a deposit master secret and a super wallet. "
+                "On-chain deposits need a house wallet and a deposit master secret. "
                 "Coinflip still works with developer-credited balances. "
-                "Generate them with `python -m casino.tools.generate_deposit_master` and "
-                "`python -m casino.tools.generate_super_wallet`."
+                "Generate them with `python -m casino.tools.generate_house_wallet` and "
+                "`python -m casino.tools.generate_deposit_master`."
             ),
         ).build()
 
@@ -964,12 +964,35 @@ class EmbedFactory:
         return builder.build()
 
     def _history_line(self, game: GameRecord, user_id: str, number: int) -> str:
-        mark = "✅" if game.player_won(user_id) else "❌"
-        kind = game.game_type.value.title()
+        if game.player_won(user_id):
+            mark = "✅"
+        elif game.winner_ids or game.winner_id:
+            mark = "❌"
+        else:
+            mark = "➖"
         return (
-            f"{number}. {mark} {kind} {game.matchup_label()} "
+            f"{number}. {mark} {self._history_kind(game)} "
             f"{self._signed_usd(game.player_profit_fiat(user_id))}"
         )
+
+    def _history_kind(self, game: GameRecord) -> str:
+        if game.is_limbo():
+            target = (
+                f" {format_limbo_multiplier(game.limbo_target)}x"
+                if game.limbo_target is not None
+                else ""
+            )
+            return f"Limbo{target} vs House"
+        if game.is_mines():
+            count = f" {game.mines_count}" if game.mines_count else ""
+            return f"Mines{count} vs House"
+        if game.is_blackjack():
+            return "Blackjack vs House"
+        if game.is_jackpot():
+            return f"Jackpot {game.matchup_label()}"
+        if game.is_target():
+            return f"Target {game.matchup_label()}"
+        return f"{game.game_type.value.title()} {game.matchup_label()}"
 
     def settings(self, user: UserRecord, currencies: tuple[str, ...]) -> EmbedBuilder:
         return (
@@ -1062,8 +1085,8 @@ class EmbedFactory:
                 self._usd_then_sol(report.house_balance_lamports, price),
             )
             .field(
-                "Super wallet",
-                self._usd_then_sol(report.super_wallet_lamports, price),
+                "House wallet",
+                self._usd_then_sol(report.house_wallet_lamports, price),
             )
             .field(
                 "Founder book",
