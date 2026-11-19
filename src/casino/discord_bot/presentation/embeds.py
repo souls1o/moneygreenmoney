@@ -1083,9 +1083,6 @@ class EmbedFactory:
                     "**Target** — `/target <amount>` opens a table in the channel you used. Set **1v1 / 1v1v1 / 1v1v1v1**, "
                     "then **Create table**. Players **Lock number** (1–999). Closest to the HMAC draw wins. "
                     "If everyone is equally close, it's a push; if a subset ties closest, they split.\n"
-                    "**Jackpot** — Join the jackpot embed with any amount. Later joins can be any amount up to **10×** "
-                    "the first player's bet. After **60 seconds** one winner is drawn; chance is **your bet / the pot**. "
-                    "Winner takes the pot (minus the PvP house fee). Settled rounds post to jackpot history."
                 ),
             )
             .divider()
