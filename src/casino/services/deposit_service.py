@@ -14,7 +14,6 @@ from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.solana_client.deposit_parser import ParsedIncomingTransfer, SolanaDepositParser
 from casino.solana_client.rpc import SolanaRpcGateway
-from casino.utils.money import subtract_transfer_fee, transfer_fee
 from casino.utils.text import TextNormalizer
 
 
@@ -119,10 +118,7 @@ class DepositService:
         if parsed.amount.is_zero():
             raise DepositError("The transfer amount is zero.")
 
-        credited_amount = subtract_transfer_fee(parsed.amount)
-        fee = transfer_fee(parsed.amount)
-        if credited_amount.is_zero():
-            raise DepositError("The transfer amount is zero.")
+        credited_amount = parsed.amount
 
         quote = await self._prices.get_quote(allow_stale=True)
         usd_price = quote.sol_price("USD")
@@ -140,15 +136,6 @@ class DepositService:
                         deposited=True,
                         session=uow.session,
                     )
-                    if not fee.is_zero():
-                        await self._balances.credit_house_reserve(
-                            amount=fee,
-                            entry_type=LedgerEntryType.FEE,
-                            transaction_type=TransactionType.FEE,
-                            price_usd=usd_price,
-                            description="Deposit transfer fee",
-                            session=uow.session,
-                        )
             except AlreadyProcessedError:
                 self._logger.info("deposit_duplicate", txSignature=parsed.signature)
                 raise

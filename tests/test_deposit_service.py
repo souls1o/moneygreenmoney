@@ -99,17 +99,16 @@ async def test_deposit_is_idempotent_on_signature() -> None:
         memo=None,
     )
     credited = await service.credit_parsed(user, parsed)
-    assert credited.sol_balance_lamports == 990_000_000
+    assert credited.sol_balance_lamports == 1_000_000_000
     with pytest.raises(AlreadyProcessedError):
         await service.credit_parsed(user, parsed)
-    assert users_repo.users["1"].sol_balance_lamports == 990_000_000
-    assert house_repo.record.sol_balance_lamports == 10_000_000
+    assert users_repo.users["1"].sol_balance_lamports == 1_000_000_000
+    assert house_repo.record.sol_balance_lamports == 0
     assert house_repo.record.total_fees_collected_lamports == 0
     deposits = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.DEPOSIT]
     assert len(deposits) == 1
     fees = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.FEE]
-    assert len(fees) == 1
-    assert fees[0].amount_lamports == 10_000_000
+    assert fees == []
 
 
 @pytest.mark.asyncio

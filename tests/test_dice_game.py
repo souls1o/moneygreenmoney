@@ -56,13 +56,13 @@ def test_call_bot_cap_allows_two_500_seats_not_a_third() -> None:
         max_players=4,
         heads_ids=["1"],
     )
-    cap = Decimal("1000")
-    seat = Decimal("500")
-    assert game.can_call_house_seat(max_house_usd=cap, seat_usd=seat)
+    cap = 2_000_000_000
+    seat = 1_000_000_000
+    assert game.can_call_house_seat(max_house=cap, seat=seat)
     game.house_seat_ids = ["HOUSE"]
-    assert game.can_call_house_seat(max_house_usd=cap, seat_usd=seat)
+    assert game.can_call_house_seat(max_house=cap, seat=seat)
     game.house_seat_ids = ["HOUSE", "HOUSE:2"]
-    assert not game.can_call_house_seat(max_house_usd=cap, seat_usd=seat)
+    assert not game.can_call_house_seat(max_house=cap, seat=seat)
 
 
 def _dice_harness(pairs: list[tuple[int, int]]) -> GameHarness:

@@ -332,13 +332,13 @@ async def test_team_call_bot_can_fill_seats_after_a_player_joins() -> None:
 
 
 @pytest.mark.asyncio
-async def test_call_bot_allows_two_500_seats_then_blocks_the_third() -> None:
+async def test_call_bot_allows_two_seats_then_blocks_past_ten_percent() -> None:
     harness = GameHarness(CoinSide.HEADS)
     harness.seed_user("1", "20")
     harness.house_repo.record.sol_balance_lamports = 20_000_000_000
     game = await harness.service.create_game(
         player1_id="1",
-        fiat_amount=Decimal("500"),
+        fiat_amount=Decimal("100"),
         side=CoinSide.HEADS,
         game_type=GameType.DICE,
         max_players=4,
@@ -348,7 +348,7 @@ async def test_call_bot_allows_two_500_seats_then_blocks_the_third() -> None:
     assert first.house_seat_count() == 1
     second = await harness.service.call_bot(game.game_id, "1")
     assert second.house_seat_count() == 2
-    with pytest.raises(GameError, match=r"at most \$1,000\.00"):
+    with pytest.raises(GameError, match="10% of the house book"):
         await harness.service.call_bot(game.game_id, "1")
     leftover = await harness.service.get(game.game_id)
     assert leftover.house_seat_count() == 2
@@ -362,11 +362,11 @@ async def test_call_bot_hidden_when_single_seat_exceeds_cap() -> None:
     harness.house_repo.record.sol_balance_lamports = 20_000_000_000
     game = await harness.service.create_game(
         player1_id="1",
-        fiat_amount=Decimal("1000.01"),
+        fiat_amount=Decimal("200.01"),
         side=CoinSide.HEADS,
     )
-    assert not game.can_call_house_seat(max_house_usd=Decimal("1000"), seat_usd=Decimal("1000.01"))
-    with pytest.raises(GameError, match=r"at most \$1,000\.00"):
+    assert not game.can_call_house_seat(max_house=2_000_000_000, seat=game.bet_amount_lamports)
+    with pytest.raises(GameError, match="10% of the house book"):
         await harness.service.call_bot(game.game_id, "1")
 
 
@@ -747,7 +747,7 @@ async def test_pvp_1v1_adds_three_percent_of_the_pot_to_fees() -> None:
 async def test_1v1_house_win_credits_call_bot_not_fees() -> None:
     harness = GameHarness(CoinSide.TAILS)
     harness.seed_user("1", "10")
-    harness.house_repo.record.sol_balance_lamports = 5 * _SEAT
+    harness.house_repo.record.sol_balance_lamports = 50 * _SEAT
     start = harness.house_repo.record.sol_balance_lamports
     game = await harness.service.create_game(player1_id="1", fiat_amount=Decimal("100"), side=CoinSide.HEADS)
     await harness.service.call_bot(game.game_id, "1")
@@ -761,7 +761,7 @@ async def test_1v1_house_win_credits_call_bot_not_fees() -> None:
 async def test_1v1_player_beats_house_takes_fee_and_call_bot_loss() -> None:
     harness = GameHarness(CoinSide.HEADS)
     harness.seed_user("1", "10")
-    harness.house_repo.record.sol_balance_lamports = 5 * _SEAT
+    harness.house_repo.record.sol_balance_lamports = 50 * _SEAT
     start = harness.house_repo.record.sol_balance_lamports
     game = await harness.service.create_game(player1_id="1", fiat_amount=Decimal("100"), side=CoinSide.HEADS)
     await harness.service.call_bot(game.game_id, "1")
@@ -775,7 +775,7 @@ async def test_2v2_one_house_seat_win_fees_teammate_and_takes_call_bot() -> None
     harness = GameHarness(CoinSide.TAILS)
     for player_id in ("1", "2", "3"):
         harness.seed_user(player_id, "10")
-    harness.house_repo.record.sol_balance_lamports = 5 * _SEAT
+    harness.house_repo.record.sol_balance_lamports = 50 * _SEAT
     start = harness.house_repo.record.sol_balance_lamports
     game = await harness.service.create_game(
         player1_id="1", fiat_amount=Decimal("100"), side=CoinSide.HEADS, mode=GameMode.TEAM
@@ -793,7 +793,7 @@ async def test_2v2_one_house_seat_loss_fees_both_winners() -> None:
     harness = GameHarness(CoinSide.HEADS)
     for player_id in ("1", "2", "3"):
         harness.seed_user(player_id, "10")
-    harness.house_repo.record.sol_balance_lamports = 5 * _SEAT
+    harness.house_repo.record.sol_balance_lamports = 50 * _SEAT
     start = harness.house_repo.record.sol_balance_lamports
     game = await harness.service.create_game(
         player1_id="1", fiat_amount=Decimal("100"), side=CoinSide.HEADS, mode=GameMode.TEAM
@@ -810,7 +810,7 @@ async def test_2v2_one_house_seat_loss_fees_both_winners() -> None:
 async def test_2v2_three_house_seats_player_team_win() -> None:
     harness = GameHarness(CoinSide.HEADS)
     harness.seed_user("1", "10")
-    harness.house_repo.record.sol_balance_lamports = 5 * _SEAT
+    harness.house_repo.record.sol_balance_lamports = 50 * _SEAT
     start = harness.house_repo.record.sol_balance_lamports
     game = await harness.service.create_game(
         player1_id="1", fiat_amount=Decimal("100"), side=CoinSide.HEADS, mode=GameMode.TEAM
@@ -828,7 +828,7 @@ async def test_2v2_two_house_seats_vs_two_players_house_win() -> None:
     harness = GameHarness(CoinSide.TAILS)
     harness.seed_user("1", "10")
     harness.seed_user("2", "10")
-    harness.house_repo.record.sol_balance_lamports = 5 * _SEAT
+    harness.house_repo.record.sol_balance_lamports = 50 * _SEAT
     start = harness.house_repo.record.sol_balance_lamports
     game = await harness.service.create_game(
         player1_id="1", fiat_amount=Decimal("100"), side=CoinSide.HEADS, mode=GameMode.TEAM
@@ -846,7 +846,7 @@ async def test_2v2_two_house_seats_vs_two_players_player_win() -> None:
     harness = GameHarness(CoinSide.HEADS)
     harness.seed_user("1", "10")
     harness.seed_user("2", "10")
-    harness.house_repo.record.sol_balance_lamports = 5 * _SEAT
+    harness.house_repo.record.sol_balance_lamports = 50 * _SEAT
     start = harness.house_repo.record.sol_balance_lamports
     game = await harness.service.create_game(
         player1_id="1", fiat_amount=Decimal("100"), side=CoinSide.HEADS, mode=GameMode.TEAM
@@ -864,7 +864,7 @@ async def test_2v2_one_house_seat_on_each_team_is_flat_call_bot() -> None:
     harness = GameHarness(CoinSide.HEADS)
     harness.seed_user("1", "10")
     harness.seed_user("2", "10")
-    harness.house_repo.record.sol_balance_lamports = 5 * _SEAT
+    harness.house_repo.record.sol_balance_lamports = 50 * _SEAT
     start = harness.house_repo.record.sol_balance_lamports
     game = await harness.service.create_game(
         player1_id="1", fiat_amount=Decimal("100"), side=CoinSide.HEADS, mode=GameMode.TEAM

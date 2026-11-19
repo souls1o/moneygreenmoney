@@ -127,7 +127,7 @@ class EmbedFactory:
             self.builder(
                 "Deposit",
                 description=(
-                    "Send **native SOL** to your personal deposit address. It stays the same for you. A **1%** deposit fee is credited to the house book."
+                    "Send **native SOL** to your personal deposit address. It stays the same for you. The full amount is credited — no deposit fee."
                 ),
             )
             .field("Deposit Address", f"`{address}`")
@@ -1062,7 +1062,7 @@ class EmbedFactory:
                 "Wallet",
                 (
                     "Use `/balance` to deposit native SOL to your personal address, then withdraw from there. "
-                    "Player deposits and withdrawals take a **1%** transfer fee credited to the house book. "
+                    "Deposits credit in full. Withdrawals take a **1%** transfer fee credited to the house book. "
                     "`/settings` sets your currency."
                 ),
             )
@@ -1092,7 +1092,8 @@ class EmbedFactory:
                     f"PvP games take **{fee} of the total pot** when they resolve. "
                     "Blackjack has no extra game fee. Limbo's 3% edge is in the crash odds. "
                     f"Minimum bet is **{min_bet}**. There is no player vs player max. "
-                    "House-bot exposure is capped at $1,000 USD per table."
+                    "Blackjack and limbo max bet is **10% of the house book**. "
+                    "House-bot exposure on coinflip and dice is also **10% of the house book** per table."
                 ),
             )
             .divider()
@@ -1115,7 +1116,7 @@ class EmbedFactory:
             .divider()
             .field(
                 "Other",
-                "`/profile` · `/tip` · `/rain` · `/affiliate` · `/support`",
+                "`/profile` · `/tip` · `/rain` · `/affiliate`",
             )
             .build()
         )
@@ -1968,18 +1969,7 @@ class EmbedFactory:
         )
 
     def _can_show_call_bot(self, game: GameRecord) -> bool:
-        cap = Decimal(self._container.settings.max_call_bot_usd)
-        return game.can_call_house_seat(max_house_usd=cap, seat_usd=self._seat_usd(game))
-
-    def _seat_usd(self, game: GameRecord) -> Decimal:
-        if game.bet_amount_usd > 0:
-            return game.bet_amount_usd
-        if game.currency.upper() == "USD":
-            return game.bet_amount_fiat
-        quote = self._container.price.peek_cache()
-        if quote is None:
-            return game.bet_amount_fiat
-        return self._container.math.sol_to_fiat(game.bet_amount, quote.sol_price("USD"))
+        return game.can_call_house_seat(max_house=1, seat=0)
 
     def _wager_usd(self, game: GameRecord) -> str:
         math = self._container.math

@@ -368,14 +368,14 @@ class GameRecord:
     def house_seat_count(self) -> int:
         return len(self.house_seat_ids)
 
-    def can_call_house_seat(self, *, max_house_usd: Decimal, seat_usd: Decimal) -> bool:
+    def can_call_house_seat(self, *, max_house: int | Decimal, seat: int | Decimal) -> bool:
         if self.status is not GameStatus.PENDING:
             return False
         if self.is_full():
             return False
         if not self.is_open_ffa() and self.next_vacant_side() is None:
             return False
-        return seat_usd * Decimal(self.house_seat_count() + 1) <= max_house_usd
+        return seat * (self.house_seat_count() + 1) <= max_house
 
     def display_title(self) -> str:
         name = self.game_type.value.title()

@@ -279,10 +279,10 @@ async def test_non_owner_cannot_act() -> None:
 async def test_house_cap_blocks_oversized_blackjack() -> None:
     harness = _harness([T, SIX, NINE, FIVE])
     harness.seed_user("1", "20")
-    with pytest.raises(GameError, match="at most"):
+    with pytest.raises(GameError, match="10% of the house book"):
         await harness.service.create_game(
             player1_id="1",
-            fiat_amount=Decimal("1001"),
+            fiat_amount=Decimal("51"),
             side=CoinSide.HEADS,
             game_type=GameType.BLACKJACK,
         )

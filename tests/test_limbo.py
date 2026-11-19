@@ -96,11 +96,27 @@ async def test_limbo_rejects_over_house_exposure() -> None:
     harness.service._rng = FixedRandomService(CoinSide.HEADS, limbos=[Decimal("2")])
     harness.house_repo.record.sol_balance_lamports = 5_000_000_000
     harness.seed_user("1", "20")
-    with pytest.raises(GameError, match="at most"):
+    with pytest.raises(GameError, match="enough SOL"):
         await harness.service.create_game(
             player1_id="1",
             fiat_amount=Decimal("5"),
             side=CoinSide.HEADS,
             game_type=GameType.LIMBO,
             limbo_target=Decimal("300"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_limbo_rejects_bet_over_ten_percent_of_house() -> None:
+    harness = GameHarness()
+    harness.service._rng = FixedRandomService(CoinSide.HEADS, limbos=[Decimal("2")])
+    harness.house_repo.record.sol_balance_lamports = 5_000_000_000
+    harness.seed_user("1", "20")
+    with pytest.raises(GameError, match="10% of the house book"):
+        await harness.service.create_game(
+            player1_id="1",
+            fiat_amount=Decimal("51"),
+            side=CoinSide.HEADS,
+            game_type=GameType.LIMBO,
+            limbo_target=Decimal("2"),
         )

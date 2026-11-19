@@ -11,6 +11,7 @@ SOL_QUANTUM = Decimal("0.000000001")
 FIAT_QUANTUM = Decimal("0.01")
 PRICE_QUANTUM = Decimal("0.00000001")
 TRANSFER_FEE_BPS = 100
+HOUSE_TABLE_CAP_BPS = 1000
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -77,6 +78,12 @@ def transfer_fee(amount: SolAmount) -> SolAmount:
 
 def subtract_transfer_fee(amount: SolAmount) -> SolAmount:
     return SolAmount(amount.lamports - transfer_fee(amount).lamports)
+
+
+def house_table_cap_lamports(book_lamports: int, *, reserved_lamports: int = 0) -> int:
+    """10% of the house book, counting SOL already reserved on this table."""
+    base = max(int(book_lamports), 0) + max(int(reserved_lamports), 0)
+    return (base * HOUSE_TABLE_CAP_BPS) // 10_000
 
 
 @dataclass(frozen=True, slots=True)

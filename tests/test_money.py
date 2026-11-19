@@ -1,6 +1,12 @@
 from decimal import Decimal
 
-from casino.utils.money import MathService, SolAmount, subtract_transfer_fee, transfer_fee
+from casino.utils.money import (
+    MathService,
+    SolAmount,
+    house_table_cap_lamports,
+    subtract_transfer_fee,
+    transfer_fee,
+)
 
 
 class TestMathService:
@@ -65,6 +71,11 @@ def test_transfer_fee_is_one_percent() -> None:
     amount = SolAmount.from_lamports(1_000_000_000)
     assert transfer_fee(amount).lamports == 10_000_000
     assert subtract_transfer_fee(amount).lamports == 990_000_000
+
+
+def test_house_table_cap_is_ten_percent_including_reserved() -> None:
+    assert house_table_cap_lamports(20_000_000_000) == 2_000_000_000
+    assert house_table_cap_lamports(19_000_000_000, reserved_lamports=1_000_000_000) == 2_000_000_000
 
 
 def test_admin_ledger_amounts_use_signed_usd() -> None:

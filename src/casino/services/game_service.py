@@ -40,7 +40,7 @@ from casino.services.user_service import UserService
 from casino.services.validation_service import ValidationService
 from casino.utils.clock import Clock
 from casino.utils.identifiers import IdentifierFactory
-from casino.utils.money import MathService, SolAmount
+from casino.utils.money import MathService, SolAmount, house_table_cap_lamports
 from casino.utils.rng import ProvablyFairService
 
 
@@ -103,6 +103,8 @@ class GameService:
         usd_price = quote.sol_price("USD")
         bet_usd = fiat_amount * usd_price / sol_price
         self._validation.validate_bet(bet_usd)
+        if game_type is GameType.BLACKJACK or game_type is GameType.LIMBO:
+            await self._require_vs_house_bet_cap(bet)
 
         now = self._clock.now()
         game_id = self._identifiers.game_id(game_type)
@@ -286,7 +288,7 @@ class GameService:
 
         quote = await self._prices.get_quote(allow_stale=True)
         usd_price = quote.sol_price("USD")
-        self._require_call_bot_cap(existing, usd_price)
+        await self._require_call_bot_cap(existing)
         bet = SolAmount.from_lamports(existing.bet_amount_lamports)
 
         with LogContext.bind(userId=actor_id, gameId=game_id):
@@ -1164,18 +1166,25 @@ class GameService:
             game.ledger_ids.append(house_refund.entry_id)
         return game
 
-    def _require_call_bot_cap(self, game: GameRecord, usd_price: Decimal) -> None:
-        cap = Decimal(self._settings.max_call_bot_usd)
-        if game.can_call_house_seat(max_house_usd=cap, seat_usd=self._call_bot_seat_usd(game, usd_price)):
-            return
-        raise GameError(
-            f"The house can take at most {self._math.format_fiat_symbol(cap, 'USD')} against the bot on this table."
+    async def _house_table_cap(self, reserved_lamports: int = 0) -> int:
+        treasury = await self._house.get()
+        return house_table_cap_lamports(
+            treasury.sol_balance_lamports,
+            reserved_lamports=reserved_lamports,
         )
 
-    def _call_bot_seat_usd(self, game: GameRecord, usd_price: Decimal) -> Decimal:
-        if game.currency.upper() == "USD":
-            return game.bet_amount_fiat
-        return self._math.sol_to_fiat(game.bet_amount, usd_price)
+    async def _require_vs_house_bet_cap(self, bet: SolAmount) -> None:
+        cap = await self._house_table_cap()
+        if bet.lamports <= cap:
+            return
+        raise GameError("Max bet is 10% of the house book.")
+
+    async def _require_call_bot_cap(self, game: GameRecord) -> None:
+        reserved = game.house_seat_count() * game.bet_amount_lamports
+        cap = await self._house_table_cap(reserved)
+        if game.can_call_house_seat(max_house=cap, seat=game.bet_amount_lamports):
+            return
+        raise GameError("The house can take at most 10% of the house book against the bot on this table.")
 
     async def blackjack_action(
         self,
@@ -1215,7 +1224,7 @@ class GameService:
         *,
         session,
     ) -> None:
-        self._require_blackjack_extra_cap(game, usd_price, extra_usd=bet_usd)
+        await self._require_blackjack_extra_cap(game, extra_lamports=bet.lamports)
         try:
             _treasury, house_bet = await self._balances.debit_house_reserve(
                 amount=bet,
@@ -1290,7 +1299,7 @@ class GameService:
             return
         extra = SolAmount.from_lamports(hand.bet_lamports)
         extra_usd = self._math.sol_to_fiat(extra, usd_price)
-        self._require_blackjack_extra_cap(game, usd_price, extra_usd=extra_usd)
+        await self._require_blackjack_extra_cap(game, extra_lamports=extra.lamports)
         debit = await self._balances.debit(
             user_id=game.creator_id,
             amount=extra,
@@ -1516,8 +1525,6 @@ class GameService:
             raise GameError("Choose a multiplier from 1.01 to 1,000,000.")
         target = parse_limbo_multiplier(game.limbo_target)
         profit = SolAmount.from_lamports(limbo_profit_lamports(bet.lamports, target))
-        extra_usd = bet_usd * (target - Decimal("1"))
-        self._require_blackjack_extra_cap(game, usd_price, extra_usd=extra_usd)
         try:
             _treasury, house_bet = await self._balances.debit_house_reserve(
                 amount=profit,
@@ -1598,12 +1605,9 @@ class GameService:
             limboResult=str(fair.crash),
         )
 
-    def _require_blackjack_extra_cap(self, game: GameRecord, usd_price: Decimal, *, extra_usd: Decimal) -> None:
-        cap = Decimal(self._settings.max_call_bot_usd)
-        current_lamports = int(game.player_wager_lamports.get(HOUSE_USER_ID, 0))
-        current = self._math.sol_to_fiat(SolAmount.from_lamports(current_lamports), usd_price)
-        if current + extra_usd <= cap:
+    async def _require_blackjack_extra_cap(self, game: GameRecord, *, extra_lamports: int) -> None:
+        reserved = int(game.player_wager_lamports.get(HOUSE_USER_ID, 0))
+        cap = await self._house_table_cap(reserved)
+        if reserved + extra_lamports <= cap:
             return
-        raise GameError(
-            f"The house can take at most {self._math.format_fiat_symbol(cap, 'USD')} against the bot on this table."
-        )
+        raise GameError("The house can take at most 10% of the house book on this table.")
