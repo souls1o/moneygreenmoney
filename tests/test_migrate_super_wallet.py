@@ -18,8 +18,43 @@ def test_plan_splits_players_then_house_and_counts_fees() -> None:
     )
     assert [leg.kind for leg in plan.legs] == ["player", "player", "house"]
     assert plan.player_total == 3_000_000_000
+    assert plan.send_total == 6_000_000_000
     assert plan.needed == 6_000_000_000 + 3 * SWEEP_FEE_LAMPORTS
     assert plan.blockers == ()
+
+
+def test_plan_skips_funds_already_on_destination_wallets() -> None:
+    plan = build_plan(
+        super_address="Super111",
+        house_address="House111",
+        super_balance=2_000_000_000,
+        rent=RENT_EXEMPT_FALLBACK_LAMPORTS,
+        fee=SWEEP_FEE_LAMPORTS,
+        house_book=3_000_000_000,
+        house_on_chain=2_700_000_000,
+        players=[("1", "Depo1", 1_000_000_000)],
+        player_on_chain={"1": 400_000_000},
+    )
+    assert [leg.kind for leg in plan.legs] == ["player", "house"]
+    assert plan.legs[0].lamports == 600_000_000
+    assert plan.legs[1].lamports == 300_000_000
+    assert plan.blockers == ()
+
+
+def test_plan_sends_house_remainder_instead_of_blocking() -> None:
+    plan = build_plan(
+        super_address="Super111",
+        house_address="House111",
+        super_balance=1_000_000_000,
+        rent=RENT_EXEMPT_FALLBACK_LAMPORTS,
+        fee=SWEEP_FEE_LAMPORTS,
+        house_book=5_000_000_000,
+        players=[],
+    )
+    assert plan.blockers == ()
+    assert plan.legs[0].kind == "house"
+    assert plan.legs[0].lamports < 5_000_000_000
+    assert plan.notes
 
 
 def test_plan_blocks_when_super_is_short_or_tables_are_open() -> None:
@@ -29,8 +64,8 @@ def test_plan_blocks_when_super_is_short_or_tables_are_open() -> None:
         super_balance=1_000_000,
         rent=RENT_EXEMPT_FALLBACK_LAMPORTS,
         fee=SWEEP_FEE_LAMPORTS,
-        house_book=5_000_000_000,
-        players=[],
+        house_book=0,
+        players=[("1", "Depo1", 5_000_000_000)],
     )
     assert short.blockers
     open_tables = build_plan(
