@@ -13,15 +13,29 @@ from casino.domain.affiliate import (
     format_affiliate_rate,
     next_affiliate_tier,
 )
-from casino.domain.enums import CoinSide, GameMode, GameStatus, GameType, RainStatus
+from casino.domain.blackjack import BlackjackAction, BlackjackOutcome, hand_total
+from casino.domain.limbo import LIMBO_START, format_limbo_multiplier
+from casino.domain.investor import InvestorPosition
+from casino.domain.enums import (
+    CoinSide,
+    GameMode,
+    GameStatus,
+    GameType,
+    JackpotStatus,
+    RainStatus,
+    TicketCategory,
+    TicketStatus,
+)
 from casino.domain.records import (
     DiceRollRecord,
     DiceTurnEvent,
     GameRecord,
     GuildConfigRecord,
     HouseStatsReport,
+    JackpotRecord,
     PlayerProfileStats,
     RainRecord,
+    TicketRecord,
     TimeframeStats,
     UserRecord,
     is_house_seat,
@@ -47,6 +61,35 @@ class EmbedFactory:
 
     def success(self, title: str, message: str) -> CasinoPanel:
         return self.builder(title, description=message).build()
+
+    def tip_received(
+        self,
+        sender_id: str,
+        amount: SolAmount,
+        *,
+        fiat: Decimal,
+        currency: str,
+    ) -> CasinoPanel:
+        math = self._container.math
+        return self.builder(
+            "Tip received",
+            description=(
+                f"{self._mention(sender_id)} sent you "
+                f"**{math.format_fiat_symbol(fiat, currency)}** "
+                f"(`{math.format_sol(amount)} SOL`)."
+            ),
+        ).build()
+
+    def house_balance(self, reserves_lamports: int, quote: PriceQuote) -> CasinoPanel:
+        math = self._container.math
+        house = SolAmount.from_lamports(reserves_lamports)
+        usd = math.sol_to_fiat(house, quote.sol_price("USD"))
+        builder = (
+            self.builder("House book")
+            .field("SOL", f"`{math.format_sol(house)} SOL`")
+            .field("USD", f"`{math.format_fiat_symbol(usd, 'USD')}`")
+        )
+        return builder.build()
 
     def balance(self, user: UserRecord, quote: PriceQuote) -> CasinoPanel:
         math = self._container.math
@@ -92,6 +135,12 @@ class EmbedFactory:
         )
 
     def open_game(self, game: GameRecord) -> CasinoPanel:
+        if game.is_blackjack():
+            return self.blackjack_table(game)
+        if game.is_limbo():
+            return self.limbo_table(game)
+        if game.is_target():
+            return self.target_table(game)
         mode_label = self._mode_label(game)
         started = "dice table" if game.is_dice() else "coinflip"
         builder = (
@@ -114,6 +163,286 @@ class EmbedFactory:
             builder.divider()
             builder.field("Wager", self._wager_usd(game))
         self._add_listing_actions(builder, game)
+        return builder.build()
+
+    def blackjack_table(
+        self,
+        game: GameRecord,
+        *,
+        dealer_cards: list | None = None,
+        show_result: bool | None = None,
+        balance_text: str = "",
+        actions: bool = True,
+    ) -> CasinoPanel:
+        allowed = game.blackjack_legal_actions()
+        playing = game.status is GameStatus.ACTIVE
+        if show_result is None:
+            show_result = game.status is GameStatus.COMPLETED
+        builder = (
+            self.builder("Blackjack", description=balance_text)
+            .persistent()
+            .footer("Blackjack pays 3:2 · Dealer hits on soft 17")
+            .field("Dealer", self._blackjack_dealer_line(game, cards=dealer_cards))
+            .divider()
+            .field(self._mention(game.creator_id), self._blackjack_player_lines(game, show_outcome=show_result))
+        )
+        if not actions:
+            if show_result:
+                builder.button(
+                    "Verify",
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=self._ids.verify_game(game.game_id),
+                )
+            return builder.build()
+        if playing:
+            builder = (
+                builder.button(
+                    "Hit",
+                    style=discord.ButtonStyle.success,
+                    custom_id=self._ids.blackjack_hit(game.game_id),
+                    disabled=BlackjackAction.HIT not in allowed,
+                )
+                .button(
+                    "Stand",
+                    style=discord.ButtonStyle.danger,
+                    custom_id=self._ids.blackjack_stand(game.game_id),
+                    disabled=BlackjackAction.STAND not in allowed,
+                )
+                .button(
+                    "Split",
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=self._ids.blackjack_split(game.game_id),
+                    disabled=BlackjackAction.SPLIT not in allowed,
+                )
+                .button(
+                    "Double",
+                    style=discord.ButtonStyle.primary,
+                    custom_id=self._ids.blackjack_double(game.game_id),
+                    disabled=BlackjackAction.DOUBLE not in allowed,
+                )
+            )
+        elif show_result:
+            builder.button(
+                "Repeat",
+                style=discord.ButtonStyle.success,
+                custom_id=self._ids.blackjack_new(game.game_id),
+            ).button(
+                "Change Bet",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.blackjack_bet(game.game_id),
+            ).button(
+                "Verify",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.verify_game(game.game_id),
+            )
+        return builder.build()
+
+    async def blackjack_panel(
+        self,
+        game: GameRecord,
+        *,
+        dealer_cards: list | None = None,
+        show_result: bool | None = None,
+    ) -> CasinoPanel:
+        conceal = show_result is False and game.status is GameStatus.COMPLETED
+        return self.blackjack_table(
+            game,
+            dealer_cards=dealer_cards,
+            show_result=show_result,
+            balance_text=await self._blackjack_balance_line(game, conceal_payout=conceal),
+        )
+
+    def limbo_table(
+        self,
+        game: GameRecord,
+        *,
+        actions: bool = True,
+        crash_value: Decimal | None = None,
+        reveal: bool = True,
+        balance_text: str = "",
+    ) -> CasinoPanel:
+        shown = crash_value if crash_value is not None else game.limbo_result
+        if shown is None:
+            shown = LIMBO_START
+        crash_text = format_limbo_multiplier(shown)
+        target = format_limbo_multiplier(game.limbo_target) if game.limbo_target is not None else "—"
+        lines = [f"**{crash_text}x**"]
+        finished = reveal and game.status is GameStatus.COMPLETED
+        if finished:
+            change = self._player_balance_change(game, game.creator_id)
+            if game.winner_ids == [game.creator_id]:
+                outcome = f"{self._mention(game.creator_id)} hit **{target}x**."
+            else:
+                outcome = f"{self._mention(game.creator_id)} missed **{target}x**."
+            lines.append(f"{outcome}  {change}")
+        if balance_text:
+            lines.append(balance_text)
+        builder = (
+            self.builder("Limbo", description="\n".join(lines))
+            .persistent()
+            .field("Wager", self._wager_usd(game))
+        )
+        if actions and finished:
+            builder.button(
+                "New Round",
+                style=discord.ButtonStyle.success,
+                custom_id=self._ids.limbo_new(game.game_id),
+            ).button(
+                "Change Bet",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.limbo_bet(game.game_id),
+            ).button(
+                "Verify",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.verify_game(game.game_id),
+            )
+        elif actions is False and finished:
+            builder.button(
+                "Verify",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.verify_game(game.game_id),
+            )
+        return builder.build()
+
+    def jackpot_table(self, jackpot: JackpotRecord, *, history: bool = False) -> CasinoPanel:
+        from casino.domain.jackpot import max_join_lamports, win_chance
+
+        pot = jackpot.pot_lamports()
+        showing = jackpot.status is JackpotStatus.SHOWING or history
+        if showing and jackpot.winner_id:
+            description = (
+                f"{self._mention(jackpot.winner_id)} won the jackpot and took "
+                f"**{self._lamports_usd(jackpot.winner_payout_lamports)}**."
+            )
+        elif showing:
+            description = "Not enough players. Bets were returned."
+        elif jackpot.opener_id:
+            description = (
+                "Join with any amount up to **10×** the first player's bet. "
+                "Chance is **your bet / the pot**. Winner takes the pot after 60 seconds."
+            )
+        else:
+            description = (
+                "Be the first to join with any amount of your balance. "
+                "Later joins can be any amount up to **10×** that first bet. "
+                "The draw is 60 seconds after the first join. Chance is **your bet / the pot**."
+            )
+        builder = self.builder("Jackpot" if not history else "Jackpot result", description=description).persistent()
+        builder.field("Pot", self._lamports_usd(pot) if pot else "—")
+        if jackpot.status is JackpotStatus.OPEN and jackpot.expires_at is not None:
+            builder.field(
+                "Draws",
+                f"{discord.utils.format_dt(jackpot.expires_at, style='F')} "
+                f"({discord.utils.format_dt(jackpot.expires_at, style='R')})",
+            )
+        opener = jackpot.opener_lamports()
+        if jackpot.status is JackpotStatus.OPEN and opener is not None:
+            builder.field("Max join", self._lamports_usd(max_join_lamports(opener)))
+        players = jackpot.player_ids()
+        if players:
+            lines: list[str] = []
+            extra = 0
+            for player_id in players:
+                if len(lines) >= 15:
+                    extra += 1
+                    continue
+                bet = int(jackpot.entries_lamports[player_id])
+                chance = win_chance(bet, pot) * 100
+                marker = " ←" if showing and player_id == jackpot.winner_id else ""
+                lines.append(
+                    f"{self._mention(player_id)} · {self._lamports_usd(bet)} · {chance:.2f}%{marker}"
+                )
+            if extra:
+                lines.append(f"+{extra} more")
+            builder.field("Players", "\n".join(lines))
+        else:
+            builder.field("Players", "Waiting for the first join.")
+        if jackpot.status is JackpotStatus.OPEN and not history:
+            builder.button(
+                "Join",
+                style=discord.ButtonStyle.success,
+                custom_id=self._ids.jackpot_join(jackpot.jackpot_id),
+            )
+        if showing:
+            builder.field("Server seed", f"`{jackpot.server_seed or '—'}`")
+            builder.field("Client seed", f"`{jackpot.client_seed}`")
+            builder.field("Nonce", str(jackpot.nonce))
+            if jackpot.ticket is not None:
+                builder.field("Ticket", str(jackpot.ticket))
+        else:
+            builder.field("Server seed hash", f"`{jackpot.server_seed_hash}`")
+        return builder.build()
+
+    async def limbo_panel(
+        self,
+        game: GameRecord,
+        *,
+        crash_value: Decimal | None = None,
+        reveal: bool = True,
+    ) -> CasinoPanel:
+        return self.limbo_table(
+            game,
+            crash_value=crash_value,
+            reveal=reveal,
+            balance_text=await self._blackjack_balance_line(game),
+        )
+
+    def target_table(
+        self,
+        game: GameRecord,
+        *,
+        draw_number: int | None = None,
+        reveal: bool = True,
+    ) -> CasinoPanel:
+        pending = game.status is GameStatus.PENDING
+        counting = game.status is GameStatus.COMPLETED and not reveal
+        description = ""
+        if game.status is GameStatus.COMPLETED:
+            shown = draw_number if draw_number is not None else game.target_number
+            description = f"**{shown if shown is not None else '—'}**"
+            if not counting:
+                description = f"{description}\n{self._target_result_line(game)}"
+        builder = (
+            self.builder(f"Target · {game.matchup_label()}", description=description)
+            .persistent()
+            .field("Players", self._target_player_lines(game, reveal=reveal))
+            .divider()
+            .field("Wager", self._wager_usd(game))
+        )
+        if pending:
+            builder.button(
+                "Join",
+                style=discord.ButtonStyle.success,
+                custom_id=self._ids.join(game.game_id),
+                disabled=game.is_full(),
+            )
+            builder.button(
+                "Lock number",
+                style=discord.ButtonStyle.primary,
+                custom_id=self._ids.target_lock(game.game_id),
+            )
+            if self._can_show_call_bot(game):
+                builder.button(
+                    "Call house",
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=self._ids.call_bot(game.game_id),
+                )
+            builder.button(
+                "Leave",
+                style=discord.ButtonStyle.danger,
+                custom_id=self._ids.leave(game.game_id),
+            )
+            builder.button(
+                "Cancel",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.cancel(game.game_id),
+            )
+        else:
+            builder.button(
+                "Verify",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.verify_game(game.game_id),
+            )
         return builder.build()
 
     def table_overview(
@@ -244,6 +573,12 @@ class EmbedFactory:
         )
 
     def resolved_game(self, game: GameRecord, *, rerun: bool = False) -> CasinoPanel:
+        if game.is_blackjack():
+            return self.blackjack_table(game, actions=False)
+        if game.is_limbo():
+            return self.limbo_table(game, actions=False)
+        if game.is_target():
+            return self.target_table(game)
         title = self._game_title(game)
         if game.is_dice():
             description = f"{self._winner_line(game)}\nFirst to **{game.first_to or 1}**."
@@ -346,7 +681,12 @@ class EmbedFactory:
                 "• **Coinflip** — paste the nonce as-is. The site's 0–100 number is the result "
                 "(0–50 Heads, 50–100 Tails).\n"
                 "• **Dice** — paste nonce as `gameNonce:rollIndex` (first roll is `N:0`). "
-                "Ignore the site's 0–100 number; the HMAC hash becomes the two dice."
+                "Ignore the site's 0–100 number; the HMAC hash becomes the two dice.\n"
+                "• **Blackjack** — paste nonce as `gameNonce:cardIndex` (first card is `N:0`). "
+                "The first 8 hex characters of the HMAC pick a card 0–51.\n"
+                "• **Limbo** — HMAC of `clientSeed:nonce:limbo`. First 13 hex characters become the crash.\n"
+                "• **Target** — paste nonce as `gameNonce:target:0` for the draw (1–999). "
+                "House picks use `gameNonce:target:1`."
             ),
         )
         return builder.persistent().build()
@@ -355,6 +695,12 @@ class EmbedFactory:
         revealed = game.status is GameStatus.COMPLETED and bool(game.server_seed)
         if game.is_dice():
             return self._dice_fair(game, revealed)
+        if game.is_blackjack():
+            return self._blackjack_fair(game, revealed)
+        if game.is_limbo():
+            return self._limbo_fair(game, revealed)
+        if game.is_target():
+            return self._target_fair(game, revealed)
         return self._coinflip_fair(game, revealed)
 
     def joined_table(self, game: GameRecord) -> CasinoPanel:
@@ -364,6 +710,11 @@ class EmbedFactory:
             description = (
                 f"You joined **{title}** ({mode}).\n"
                 f"Open the table: <#{game.private_channel_id}>"
+            )
+        elif game.is_target():
+            description = (
+                f"You joined **{title}** ({mode}).\n"
+                "Press **Lock number** on the listing and pick 1–999."
             )
         else:
             description = (
@@ -524,6 +875,68 @@ class EmbedFactory:
             .timeout(180)
         )
 
+    def invest(
+        self,
+        member: discord.abc.User,
+        position: InvestorPosition,
+        quote: PriceQuote,
+        currency: str,
+    ) -> EmbedBuilder:
+        math = self._container.math
+        price = quote.sol_price("USD")
+        edge = self._container.settings.house_fee_rate_display
+        founder = SolAmount.from_lamports(position.founder_equity_lamports)
+        pool = SolAmount.from_lamports(position.investor_pool_lamports)
+        house_ev = SolAmount.from_lamports(position.forecast_ev_lamports)
+        user_ev = SolAmount.from_lamports(position.user_forecast_ev_lamports)
+        cash = SolAmount.from_lamports(min(position.user_equity_lamports, position.book_lamports))
+        return (
+            self.builder(
+                "Invest",
+                description=(
+                    "Your stake is a share of the live house book in SOL. "
+                    "House fees and house-game results move the book. "
+                    "There is no transfer fee on invest or divest. "
+                    f"The {edge} house edge is a forecast only — it is not credited."
+                ),
+            )
+            .thumbnail(member.display_avatar.url)
+            .field(
+                "Your stake",
+                (
+                    f"{self._usd_then_sol(position.user_equity_lamports, price)}\n"
+                    f"`{position.ownership_bps / 100:.2f}%` of the house book"
+                ),
+            )
+            .field("House book", self._usd_then_sol(position.book_lamports, price))
+            .field(
+                "Split",
+                (
+                    f"Founder `{math.format_sol(founder)} SOL`\n"
+                    f"Investors `{math.format_sol(pool)} SOL`"
+                ),
+            )
+            .field(
+                "Forecast EV",
+                (
+                    f"Human handle {self._usd_then_sol(position.human_handle_lamports, price)}\n"
+                    f"{edge} of that is `{math.format_sol(house_ev)} SOL`\n"
+                    f"Your slice `{math.format_sol(user_ev)} SOL`"
+                ),
+            )
+            .field(
+                "Range",
+                (
+                    f"{math.format_fiat_symbol(position.min_invest_usd, 'USD')} – "
+                    f"{math.format_fiat_symbol(position.max_invest_usd, 'USD')} per deposit\n"
+                    f"Balance `{math.format_sol(SolAmount.from_lamports(position.player_balance_lamports))} SOL` "
+                    f"({math.format_fiat_symbol(math.sol_to_fiat(SolAmount.from_lamports(position.player_balance_lamports), quote.sol_price(currency)), currency)})\n"
+                    f"Withdrawable `{math.format_sol(cash)} SOL`"
+                ),
+            )
+            .timeout(300)
+        )
+
     def house(self, reserves_lamports: int, fees_lamports: int) -> CasinoPanel:
         math = self._container.math
         return (
@@ -544,6 +957,14 @@ class EmbedFactory:
             .field(
                 "Super wallet",
                 self._usd_then_sol(report.super_wallet_lamports, price),
+            )
+            .field(
+                "Founder book",
+                self._usd_then_sol(report.founder_pool_lamports, price),
+            )
+            .field(
+                "Investor book",
+                self._usd_then_sol(report.investor_pool_lamports, price),
             )
         )
         builder.divider()
@@ -645,28 +1066,63 @@ class EmbedFactory:
             .field(
                 "Coinflip",
                 (
-                    "`/coinflip <amount> <1v1|2v2> <Heads|Tails> <first_to>` opens a table. "
-                    "Join from the listing, then every seated player presses **Ready**. "
-                    "**First to** is coin wins needed; each flip starts 3 seconds after the last. "
-                    "The creator can **Call bot** to fill empty seats. "
-                    "In the home server it posts to open coinflips; as a user app it posts inline."
+                    "`/coinflip <amount>` opens a private rules panel. Set **1v1 or 2v2**, Heads/Tails, and first-to, "
+                    "then **Create table**. Join from the listing, then every seated player presses **Ready**."
                 ),
             )
             .divider()
             .field(
                 "Dice",
                 (
-                    "`/dice <amount> <1v1|1v1v1|1v1v1v1|2v2> <first_to>` opens a table. "
+                    "`/dice <amount>` opens a private rules panel. Set matchup and first-to, then **Create table**. "
                     "Highest two-dice total scores the point. In **2v2**, that point goes to the team. "
-                    "Take turns with `/roll` in the private table. Ties in 1v1 score nothing; "
-                    "3+ player and cross-team ties roll off."
+                    "Take turns with `/roll` in the private table."
+                ),
+            )
+            .divider()
+            .field(
+                "Blackjack",
+                (
+                    "`/blackjack <amount>` deals vs the house in the channel you used. "
+                    "8-deck shoe, blackjack pays 3:2, dealer hits soft 17, no peek, no surrender, "
+                    "no double after split, split once to two hands, one card on split aces. "
+                    "No extra 3% game fee."
+                ),
+            )
+            .divider()
+            .field(
+                "Limbo",
+                (
+                    "`/limbo <amount> <multiplier>` vs the house. You win if the crash is at least your target. "
+                    "A win pays **target × bet**. Odds include a **3%** house edge "
+                    "(win chance is `97% / target`)."
+                ),
+            )
+            .divider()
+            .field(
+                "Jackpot",
+                (
+                    "The jackpot embed stays in its channel. **Join** with any amount. "
+                    "Later players can join with any amount up to **10×** the first player's bet. "
+                    "After **60 seconds** one winner is drawn; chance is **your bet / the pot**. "
+                    "Winner takes the pot (minus the PvP house fee). Settled rounds post to jackpot history."
+                ),
+            )
+            .divider()
+            .field(
+                "Target",
+                (
+                    "`/target <amount>` opens a private rules panel. Set **1v1 / 1v1v1 / 1v1v1v1**, then **Create table**. "
+                    "Players **Lock number** (1–999, hidden until the draw). "
+                    "Closest to the HMAC draw wins. If everyone is equally close, it's a push; if a subset ties closest, they split."
                 ),
             )
             .divider()
             .field(
                 "Fees",
                 (
-                    f"House fee is **{fee} of the total pot**, taken when the game resolves. "
+                    f"PvP games take **{fee} of the total pot** when they resolve. "
+                    "Blackjack has no extra game fee. Limbo's 3% edge is in the crash odds. "
                     f"Minimum bet is **{min_bet}**. There is no player vs player max. "
                     "House-bot exposure is capped at $1,000 USD per table."
                 ),
@@ -691,7 +1147,7 @@ class EmbedFactory:
             .divider()
             .field(
                 "Other",
-                "`/profile` · `/tip` · `/rain` · `/affiliate`",
+                "`/profile` · `/tip` · `/rain` · `/affiliate` · `/support`",
             )
             .build()
         )
@@ -783,6 +1239,21 @@ class EmbedFactory:
             description="Open **dice** tables are listed here. Join from this channel, then press **Ready** in the table to start.",
         ).build()
 
+    def channel_open_blackjack(self) -> CasinoPanel:
+        return self.builder(
+            "Open blackjack",
+            description="Blackjack vs the house is dealt here. Use **Hit**, **Stand**, **Split**, and **Double** on the table message.",
+        ).build()
+
+    def channel_open_target(self) -> CasinoPanel:
+        return self.builder(
+            "Open target",
+            description=(
+                "Open **target** tables are listed here. Join, lock a number from 1 to 999, "
+                "or **Call house**. Closest to the draw wins."
+            ),
+        ).build()
+
     def channel_deposit_alerts(self) -> CasinoPanel:
         return self.builder(
             "Deposit alerts",
@@ -857,26 +1328,114 @@ class EmbedFactory:
             self.builder(
                 "Casino channel config",
                 description=(
-                    "Set the open coinflip and dice lobbies, outcome channels, private-table categories, "
+                    "Set the open coinflip, dice, blackjack, and target lobbies, outcome channels, private-table categories, "
                     "the rain channel and optional rain ping, the verify channel and member role, "
-                    "the provably fair panel, and admin alert channels."
+                    "jackpot and jackpot history, "
+                    "the investor role, support tickets, the provably fair panel, and admin alert channels."
                 ),
             )
             .field("Open coinflips", self._channel(config.listing_channel_id(GameType.COINFLIP)))
             .field("Open dice", self._channel(config.listing_channel_id(GameType.DICE)))
+            .field("Open blackjack", self._channel(config.listing_channel_id(GameType.BLACKJACK)))
+            .field("Open target", self._channel(config.listing_channel_id(GameType.TARGET)))
             .field("Coinflip outcomes", self._channel(config.coinflip_outcomes_channel_id))
             .field("Coinflip category", self._channel(config.coinflip_category_id))
             .field("Dice outcomes", self._channel(config.dice_outcomes_channel_id))
             .field("Dice category", self._channel(config.dice_category_id))
+            .field("Blackjack outcomes", self._channel(config.blackjack_outcomes_channel_id))
+            .field("Target outcomes", self._channel(config.target_outcomes_channel_id))
+            .field("Jackpot", self._channel(config.jackpot_channel_id))
+            .field("Jackpot history", self._channel(config.jackpot_history_channel_id))
             .field("Rain", self._channel(config.rain_channel_id))
             .field("Rain ping", self._role(config.rain_ping_role_id))
             .field("Verify", self._channel(config.verify_channel_id))
             .field("Member role", self._role(config.member_role_id))
+            .field("Investor role", self._role(config.investor_role_id))
+            .field("Support panel", self._channel(config.support_channel_id))
+            .field("Support category", self._channel(config.support_category_id))
+            .field("Support role", self._role(config.support_role_id))
+            .field("Support logs", self._channel(config.support_logs_channel_id))
             .field("Provably fair", self._channel(config.provably_fair_channel_id))
             .field("Deposit alerts", self._channel(config.deposit_alerts_channel_id))
             .field("Withdrawal alerts", self._channel(config.withdrawal_alerts_channel_id))
             .field("House ledger", self._channel(config.house_ledger_channel_id))
             .timeout(300)
+        )
+
+    def support_hub(self) -> CasinoPanel:
+        builder = (
+            self.builder(
+                "Support",
+                description=(
+                    "Choose a topic, then describe what you need. "
+                    "A private ticket channel opens for you and staff. "
+                    "One open ticket at a time."
+                ),
+            )
+            .persistent()
+        )
+        builder.add_item(
+            discord.ui.Select(
+                custom_id=self._ids.TICKET_TOPIC,
+                placeholder="Choose a topic",
+                min_values=1,
+                max_values=1,
+                options=[
+                    discord.SelectOption(label=category.label(), value=category.value)
+                    for category in TicketCategory
+                ],
+            )
+        )
+        return builder.build()
+
+    def ticket_room(self, ticket: TicketRecord, *, support_role_id: str | None = None) -> CasinoPanel:
+        builder = (
+            self.builder(
+                f"Ticket #{ticket.number}",
+                description=ticket.body,
+            )
+            .persistent()
+            .field("Topic", ticket.category.label())
+            .field("Subject", ticket.subject)
+            .field("Opened by", f"<@{ticket.opener_id}>")
+        )
+        if ticket.status is not TicketStatus.CLOSED:
+            builder.button(
+                "Close",
+                style=discord.ButtonStyle.danger,
+                custom_id=self._ids.ticket_close(ticket.ticket_id),
+            )
+        panel = builder.build()
+        panel.allowed_mentions = discord.AllowedMentions(users=True, roles=True, everyone=False)
+        return panel
+
+    def ticket_closed(self, ticket: TicketRecord, actor_id: str, reason: str) -> CasinoPanel:
+        detail = reason.strip() or "No reason given."
+        return (
+            self.builder(
+                f"Ticket #{ticket.number} closed",
+                description=detail,
+            )
+            .field("Topic", ticket.category.label())
+            .field("Subject", ticket.subject)
+            .field("Opened by", f"<@{ticket.opener_id}>")
+            .field("Closed by", f"<@{actor_id}>")
+            .build()
+        )
+
+    def rain_payout(self, rain: RainRecord, share: SolAmount) -> CasinoPanel:
+        math = self._container.math
+        pot = math.format_fiat_symbol(rain.amount_fiat, rain.currency)
+        return (
+            self.builder(
+                "Rain ended",
+                description=(
+                    f"A rain of **{pot}** just settled. "
+                    f"Your share `{math.format_sol(share)} SOL` is in your balance."
+                ),
+            )
+            .field("Joiners", f"`{rain.joiner_count()}`")
+            .build()
         )
 
     def rain_listing(self, rain: RainRecord, *, ping_role_id: str | None = None) -> CasinoPanel:
@@ -943,7 +1502,7 @@ class EmbedFactory:
     def _add_listing_actions(self, builder: EmbedBuilder, game: GameRecord) -> None:
         if game.status is not GameStatus.PENDING:
             return
-        if game.is_dice_ffa() or (not game.is_dice() and game.mode is not GameMode.TEAM):
+        if game.is_open_ffa() or (not game.is_dice() and game.mode is not GameMode.TEAM):
             builder.button(
                 "Join",
                 style=discord.ButtonStyle.success,
@@ -1188,6 +1747,219 @@ class EmbedFactory:
             .button("Open verifier", url=self._container.settings.verify_page_url())
         )
         return builder.build()
+
+    def _blackjack_fair(self, game: GameRecord, revealed: bool) -> CasinoPanel:
+        seed = f"`{game.server_seed}`" if revealed and game.server_seed else "Hidden until the hand completes"
+        description = (
+            f"**{self._game_title(game)}** — player vs house.\n\n"
+            "**What each number means**\n"
+            "• **Server seed hash** — shown when the hand is dealt.\n"
+            "• **Server seed** — revealed when the hand ends.\n"
+            "• **Client seed** — random string for this table.\n"
+            "• **Game nonce** — this table's counter.\n"
+            "• **Card index** — which card was drawn, starting at **0**.\n\n"
+            "**How to replay a card**\n"
+            f"HMAC-SHA256(server_seed, `{game.client_seed}:{game.nonce}:shoe:drawIndex`). First 8 hex characters pick "
+            "from the remaining 8-deck shoe (416 cards). Rank is card mod 13 (A,2–10,J,Q,K). Suit is card / 13 (♠♥♦♣)."
+        )
+        return (
+            self.builder("Provably fair check", description=description)
+            .divider()
+            .field("Server seed hash", f"`{game.server_seed_hash}`")
+            .divider()
+            .field("Server seed", seed)
+            .divider()
+            .field("Client seed", f"`{game.client_seed}`")
+            .divider()
+            .field("Game nonce", str(game.nonce))
+            .divider()
+            .field("Cards drawn", str(game.blackjack_card_index))
+            .button("Open verifier", url=self._container.settings.verify_page_url())
+            .build()
+        )
+
+    def _limbo_fair(self, game: GameRecord, revealed: bool) -> CasinoPanel:
+        seed = f"`{game.server_seed}`" if revealed and game.server_seed else "Hidden until the round completes"
+        target = format_limbo_multiplier(game.limbo_target) if game.limbo_target is not None else "—"
+        crash = format_limbo_multiplier(game.limbo_result) if revealed and game.limbo_result is not None else "Hidden"
+        description = (
+            f"**{self._game_title(game)}** — player vs house.\n\n"
+            "**What each number means**\n"
+            "• **Server seed hash** — shown when you play.\n"
+            "• **Server seed** — revealed when the round ends.\n"
+            "• **Client seed** — random string for this round.\n"
+            "• **Game nonce** — this round's counter.\n\n"
+            "**How to replay the crash**\n"
+            f"HMAC-SHA256(server_seed, `{game.client_seed}:{game.nonce}:limbo`). "
+            "Take the first 13 hex characters as an integer `n`. "
+            "Crash is `floor(((1 − 0.03) / ((n + 1) / 2^52)) × 100) / 100`, "
+            "capped between 1.00 and 1,000,000. You win if crash ≥ target."
+        )
+        return (
+            self.builder("Provably fair check", description=description)
+            .divider()
+            .field("Server seed hash", f"`{game.server_seed_hash}`")
+            .divider()
+            .field("Server seed", seed)
+            .divider()
+            .field("Client seed", f"`{game.client_seed}`")
+            .divider()
+            .field("Game nonce", str(game.nonce))
+            .divider()
+            .field("Target", f"{target}x")
+            .divider()
+            .field("Crash", f"{crash}x")
+            .button("Open verifier", url=self._container.settings.verify_page_url())
+            .build()
+        )
+
+    def _target_fair(self, game: GameRecord, revealed: bool) -> CasinoPanel:
+        seed = f"`{game.server_seed}`" if revealed and game.server_seed else "Hidden until the draw"
+        description = (
+            f"**{self._game_title(game)}** — closest to 1–999.\n\n"
+            "**What each number means**\n"
+            "• **Server seed hash** — shown when the table is listed.\n"
+            "• **Server seed** — revealed when the draw completes.\n"
+            "• **Client seed** — random string for this table.\n"
+            "• **Game nonce** — this table's counter.\n\n"
+            "**How to replay the draw**\n"
+            f"HMAC-SHA256(server_seed, `{game.client_seed}:{game.nonce}:target:0`). "
+            "First 8 hex characters, convert to an integer, remainder after dividing by 999, then add 1. "
+            "House picks use index **1** instead of **0**."
+        )
+        draw = str(game.target_number) if revealed and game.target_number is not None else "Hidden"
+        return (
+            self.builder("Provably fair check", description=description)
+            .divider()
+            .field("Server seed hash", f"`{game.server_seed_hash}`")
+            .divider()
+            .field("Server seed", seed)
+            .divider()
+            .field("Client seed", f"`{game.client_seed}`")
+            .divider()
+            .field("Game nonce", str(game.nonce))
+            .divider()
+            .field("Draw", draw)
+            .button("Open verifier", url=self._container.settings.verify_page_url())
+            .build()
+        )
+
+    def _target_player_lines(self, game: GameRecord, *, reveal: bool = True) -> str:
+        lines: list[str] = []
+        for player_id in game.player_ids():
+            name = self._mention(player_id)
+            if game.status is GameStatus.COMPLETED and reveal:
+                pick = game.target_picks.get(player_id)
+                shown = pick if pick is not None else "—"
+                lines.append(f"{name} · **{shown}** · {self._player_balance_change(game, player_id)}")
+            elif game.has_target_pick(player_id) or game.status is GameStatus.COMPLETED:
+                lines.append(f"{name} · Locked")
+            else:
+                lines.append(f"{name} · Waiting...")
+        if game.status is GameStatus.PENDING:
+            open_seats = game.seat_capacity() - len(game.player_ids())
+            for _ in range(max(open_seats, 0)):
+                lines.append("Open seat")
+        return "\n".join(lines) or "—"
+
+    def _target_result_line(self, game: GameRecord) -> str:
+        if not game.winner_ids:
+            return "Push. Wagers were returned."
+        if all(is_house_seat(player_id) for player_id in game.winner_ids):
+            return "House was closest."
+        return f"{self._mention(game.winner_ids[0])} was closest."
+
+    def _blackjack_dealer_line(self, game: GameRecord, *, cards: list | None = None) -> str:
+        shown = game.blackjack_dealer_cards if cards is None else cards
+        if not shown:
+            return "—"
+        hole_hidden = cards is None and game.blackjack_hole_hidden and len(shown) >= 2
+        if hole_hidden:
+            visible = " ".join(card.label for card in shown[:-1])
+            return f"{visible} ??  ·  {shown[0].pip_value if shown[0].rank != 0 else 11}+"
+        labels = " ".join(card.label for card in shown)
+        return f"{labels}  ·  **{hand_total(shown)}**"
+
+    def _blackjack_player_lines(self, game: GameRecord, *, show_outcome: bool = True) -> str:
+        if not game.blackjack_player_hands:
+            return "—"
+        lines: list[str] = []
+        for index, hand in enumerate(game.blackjack_player_hands):
+            labels = " ".join(card.label for card in hand.cards) or "—"
+            marker = " ←" if game.status is GameStatus.ACTIVE and index == game.blackjack_hand_index else ""
+            change = (
+                f" · {self._blackjack_hand_change(game, hand)}"
+                if show_outcome and hand.outcome
+                else ""
+            )
+            prefix = f"Hand {index + 1} · " if len(game.blackjack_player_hands) > 1 else ""
+            lines.append(f"{prefix}{labels}  ·  **{hand_total(hand.cards)}**{change}{marker}")
+        return "\n".join(lines)
+
+    def _lamports_usd(self, lamports: int) -> str:
+        sol = SolAmount.from_lamports(max(int(lamports), 0))
+        quote = self._container.price.peek_cache()
+        if quote is None:
+            return f"{self._container.math.format_sol(sol)} SOL"
+        usd = self._container.math.sol_to_fiat(sol, quote.sol_price("USD"))
+        return self._container.math.format_fiat_symbol(usd, "USD")
+
+    async def user_balance_line(self, game: GameRecord, *, conceal_payout: bool = False) -> str:
+        return await self._blackjack_balance_line(game, conceal_payout=conceal_payout)
+
+    async def _blackjack_balance_line(self, game: GameRecord, *, conceal_payout: bool = False) -> str:
+        try:
+            user = await self._container.users.get_or_create(game.creator_id)
+        except Exception:
+            return ""
+        lamports = user.sol_balance.lamports
+        if conceal_payout:
+            lamports -= int(game.winner_payout_lamports or 0)
+        sol = SolAmount.from_lamports(max(lamports, 0))
+        quote = self._container.price.peek_cache()
+        if quote is None:
+            return f"Balance **{self._container.math.format_sol(sol)} SOL**"
+        usd = self._container.math.sol_to_fiat(sol, quote.sol_price("USD"))
+        return f"Balance **{self._container.math.format_fiat_symbol(usd, 'USD')}**"
+
+    def _player_balance_change(self, game: GameRecord, player_id: str) -> str:
+        quote = self._container.price.peek_cache()
+        lamports = game.player_profit_lamports(player_id)
+        if quote is None:
+            sign = "+" if lamports >= 0 else "-"
+            return f"{sign}{self._container.math.format_sol(SolAmount.from_lamports(abs(lamports)))} SOL"
+        usd = self._container.math.sol_to_fiat(SolAmount.from_lamports(abs(lamports)), quote.sol_price("USD"))
+        return self._signed_usd(usd if lamports >= 0 else -usd)
+
+    def _blackjack_hand_change(self, game: GameRecord, hand) -> str:
+        if len(game.blackjack_player_hands) == 1:
+            return self._player_balance_change(game, game.creator_id)
+        quote = self._container.price.peek_cache()
+        lamports = self._blackjack_hand_net_lamports(hand)
+        if quote is None:
+            sign = "+" if lamports >= 0 else "-"
+            return f"{sign}{self._container.math.format_sol(SolAmount.from_lamports(abs(lamports)))} SOL"
+        usd = self._container.math.sol_to_fiat(SolAmount.from_lamports(abs(lamports)), quote.sol_price("USD"))
+        return self._signed_usd(usd if lamports >= 0 else -usd)
+
+    def _blackjack_hand_net_lamports(self, hand) -> int:
+        wager = int(hand.bet_lamports)
+        if hand.outcome is BlackjackOutcome.PUSH:
+            return 0
+        if hand.outcome is BlackjackOutcome.LOSE:
+            return -wager
+        if hand.outcome is BlackjackOutcome.BLACKJACK:
+            return wager + wager // 2
+        return wager
+
+    def _blackjack_result_line(self, game: GameRecord) -> str:
+        if not game.winner_ids:
+            return "Push. Wagers were returned."
+        if game.winner_ids == [game.creator_id]:
+            if any(hand.outcome is BlackjackOutcome.BLACKJACK for hand in game.blackjack_player_hands):
+                return f"{self._mention(game.creator_id)} blackjack pays 3:2."
+            return f"{self._mention(game.creator_id)} beat the house."
+        return "House wins."
 
     def _dice_fair_rolls(self, game: GameRecord) -> str:
         if not game.dice_rolls:

@@ -11,6 +11,7 @@ from casino.domain.enums import RainStatus
 from casino.domain.records import RainRecord
 from casino.errors import RainError
 from casino.logging.logger import get_logger
+from casino.utils.money import SolAmount
 
 
 class RainPresenter:
@@ -59,6 +60,7 @@ class RainPresenter:
     async def on_settled(self, rain: RainRecord) -> None:
         self._scheduled.discard(rain.rain_id)
         await self._edit_listing(rain)
+        await self._notify_joiners(rain)
 
     async def _settle_after(self, rain_id: str, delay: float) -> None:
         try:
@@ -90,6 +92,44 @@ class RainPresenter:
             self._logger.exception("rain_listing_edit_failed", rainId=rain.rain_id)
             panel.stop()
 
+    async def _notify_joiners(self, rain: RainRecord) -> None:
+        if rain.status is not RainStatus.COMPLETED or not rain.joiner_ids:
+            return
+        await self._ping_joiners(rain)
+        for user_id in rain.joiner_ids:
+            await self._dm_joiner(rain, user_id)
+
+    async def _ping_joiners(self, rain: RainRecord) -> None:
+        if not rain.channel_id:
+            return
+        channel = await self._text_channel(rain.channel_id)
+        if channel is None:
+            return
+        mentions = discord.AllowedMentions(users=True, roles=False, everyone=False)
+        for batch in _chunks(rain.joiner_ids, 40):
+            tags = " ".join(f"<@{user_id}>" for user_id in batch)
+            try:
+                await channel.send(
+                    content=f"Rain ended. {tags}",
+                    allowed_mentions=mentions,
+                )
+            except discord.HTTPException:
+                self._logger.info("rain_joiner_ping_skipped", rainId=rain.rain_id)
+                return
+
+    async def _dm_joiner(self, rain: RainRecord, user_id: str) -> None:
+        share = SolAmount.from_lamports(int(rain.payouts_lamports.get(user_id, 0)))
+        panel = self._embeds.rain_payout(rain, share)
+        try:
+            user = self._bot.get_user(int(user_id)) or await self._bot.fetch_user(int(user_id))
+            await user.send(**panel.send_kwargs())
+        except (discord.HTTPException, discord.Forbidden, ValueError):
+            self._logger.info("rain_payout_dm_skipped", userId=user_id, rainId=rain.rain_id)
+        except Exception:
+            self._logger.exception("rain_payout_dm_failed", userId=user_id, rainId=rain.rain_id)
+        finally:
+            panel.stop()
+
     async def _text_channel(self, channel_id: str) -> discord.TextChannel | None:
         channel = self._bot.get_channel(int(channel_id))
         if channel is None:
@@ -98,3 +138,7 @@ class RainPresenter:
             except discord.HTTPException:
                 return None
         return channel if isinstance(channel, discord.TextChannel) else None
+
+
+def _chunks(values: list[str], size: int) -> list[list[str]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]

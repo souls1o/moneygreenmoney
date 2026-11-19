@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from casino.domain.enums import GameStatus
+from casino.domain.investor import equity_lamports
 from casino.domain.records import (
     GameRecord,
     HouseStatsReport,
@@ -55,6 +56,13 @@ class HouseStatsCalculator:
         super_wallet_lamports: int = 0,
     ) -> HouseStatsReport:
         aware_now = self._require_utc(now)
+        pool = treasury.pool_shares()
+        investor_pool = equity_lamports(treasury.investor_shares, treasury.sol_balance_lamports, pool)
+        founder_pool = (
+            equity_lamports(treasury.founder_shares, treasury.sol_balance_lamports, pool)
+            if pool
+            else treasury.sol_balance_lamports
+        )
         return HouseStatsReport(
             house_balance_lamports=treasury.sol_balance_lamports,
             super_wallet_lamports=super_wallet_lamports,
@@ -64,6 +72,10 @@ class HouseStatsCalculator:
             timeframes=tuple(
                 self.for_window(games, window=window, now=aware_now) for window in windows
             ),
+            founder_shares=treasury.founder_shares,
+            investor_shares=treasury.investor_shares,
+            founder_pool_lamports=founder_pool,
+            investor_pool_lamports=investor_pool,
         )
 
     def for_window(

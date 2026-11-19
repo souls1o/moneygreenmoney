@@ -137,7 +137,7 @@ class AdminCog(commands.Cog):
             ).send_kwargs(ephemeral=True)
         )
 
-    @admin.command(name="config", description="Set lobby, outcomes, categories, PF, and admin alert channels")
+    @admin.command(name="config", description="Set lobby, outcomes, roles, PF, and admin alert channels")
     async def config(self, interaction: discord.Interaction) -> None:
         await self._guard(interaction)
         if interaction.guild_id is None:
@@ -160,11 +160,18 @@ class AdminCog(commands.Cog):
             app_commands.Choice(name="Coinflip how to play", value="coinflip"),
             app_commands.Choice(name="Open coinflips header", value="open_coinflips"),
             app_commands.Choice(name="Open dice header", value="open_dice"),
+            app_commands.Choice(name="Open blackjack header", value="open_blackjack"),
+            app_commands.Choice(name="Open target header", value="open_target"),
             app_commands.Choice(name="Coinflip outcomes header", value="coinflip_outcomes"),
             app_commands.Choice(name="Dice header", value="dice"),
             app_commands.Choice(name="Dice outcomes header", value="dice_outcomes"),
+            app_commands.Choice(name="Blackjack outcomes header", value="blackjack_outcomes"),
+            app_commands.Choice(name="Target outcomes header", value="target_outcomes"),
+            app_commands.Choice(name="Jackpot panel", value="jackpot"),
+            app_commands.Choice(name="Jackpot history header", value="jackpot_history"),
             app_commands.Choice(name="Provably fair panel", value="provably_fair"),
             app_commands.Choice(name="Verify panel", value="verify"),
+            app_commands.Choice(name="Support panel", value="support"),
             app_commands.Choice(name="Deposit alerts header", value="deposits"),
             app_commands.Choice(name="Withdrawal alerts header", value="withdrawals"),
             app_commands.Choice(name="House ledger header", value="house_ledger"),
@@ -212,8 +219,13 @@ class AdminCog(commands.Cog):
             jobs = [
                 (config.listing_channel_id(GameType.COINFLIP), self._embeds.channel_open_coinflips()),
                 (config.listing_channel_id(GameType.DICE), self._embeds.channel_open_dice()),
+                (config.listing_channel_id(GameType.BLACKJACK), self._embeds.channel_open_blackjack()),
+                (config.listing_channel_id(GameType.TARGET), self._embeds.channel_open_target()),
                 (config.coinflip_outcomes_channel_id, self._embeds.channel_outcomes("coinflip")),
                 (config.dice_outcomes_channel_id, self._embeds.channel_outcomes("dice")),
+                (config.blackjack_outcomes_channel_id, self._embeds.channel_outcomes("blackjack")),
+                (config.target_outcomes_channel_id, self._embeds.channel_outcomes("target")),
+                (config.jackpot_history_channel_id, self._embeds.channel_outcomes("jackpot")),
                 (config.deposit_alerts_channel_id, self._embeds.channel_deposit_alerts()),
                 (config.withdrawal_alerts_channel_id, self._embeds.channel_withdrawal_alerts()),
                 (config.house_ledger_channel_id, self._embeds.channel_house_ledger()),
@@ -226,12 +238,22 @@ class AdminCog(commands.Cog):
             jobs = [(chosen or config.listing_channel_id(GameType.COINFLIP), self._embeds.channel_open_coinflips())]
         elif kind == "open_dice":
             jobs = [(chosen or config.listing_channel_id(GameType.DICE), self._embeds.channel_open_dice())]
+        elif kind == "open_blackjack":
+            jobs = [(chosen or config.listing_channel_id(GameType.BLACKJACK), self._embeds.channel_open_blackjack())]
+        elif kind == "open_target":
+            jobs = [(chosen or config.listing_channel_id(GameType.TARGET), self._embeds.channel_open_target())]
         elif kind == "coinflip_outcomes":
             jobs = [(chosen or config.coinflip_outcomes_channel_id, self._embeds.channel_outcomes("coinflip"))]
         elif kind == "dice":
             jobs = [(chosen or here, self._embeds.channel_dice())]
         elif kind == "dice_outcomes":
             jobs = [(chosen or config.dice_outcomes_channel_id, self._embeds.channel_outcomes("dice"))]
+        elif kind == "blackjack_outcomes":
+            jobs = [(chosen or config.blackjack_outcomes_channel_id, self._embeds.channel_outcomes("blackjack"))]
+        elif kind == "target_outcomes":
+            jobs = [(chosen or config.target_outcomes_channel_id, self._embeds.channel_outcomes("target"))]
+        elif kind == "jackpot_history":
+            jobs = [(chosen or config.jackpot_history_channel_id, self._embeds.channel_outcomes("jackpot"))]
         elif kind == "deposits":
             jobs = [(chosen or config.deposit_alerts_channel_id, self._embeds.channel_deposit_alerts())]
         elif kind == "withdrawals":
@@ -260,6 +282,14 @@ class AdminCog(commands.Cog):
             verify_line = await self._post_verify(guild, chosen if kind == "verify" else None)
             if verify_line:
                 posted.append(verify_line)
+        if kind in {"support", "all_configured"}:
+            support_line = await self._post_support(guild, chosen if kind == "support" else None)
+            if support_line:
+                posted.append(support_line)
+        if kind in {"jackpot", "all_configured"}:
+            jackpot_line = await self._post_jackpot(guild, chosen if kind == "jackpot" else None)
+            if jackpot_line:
+                posted.append(jackpot_line)
         return posted
 
     async def _post_provably_fair(self, guild: discord.Guild, override_channel_id: str | None) -> str | None:
@@ -298,6 +328,42 @@ class AdminCog(commands.Cog):
         channel = message.channel
         mention = channel.mention if isinstance(channel, discord.TextChannel) else "verify"
         return f"Verify → {mention}"
+
+    async def _post_support(self, guild: discord.Guild, override_channel_id: str | None) -> str | None:
+        from casino.discord_bot.bot import CasinoBot
+
+        if override_channel_id:
+            config = await self._container.guild_configs.get(str(guild.id))
+            if config.support_channel_id != override_channel_id:
+                await self._container.guild_configs.set_slot(
+                    str(guild.id), GuildConfigSlot.SUPPORT, override_channel_id
+                )
+        if not isinstance(self.bot, CasinoBot):
+            return None
+        message = await self.bot.tickets.ensure_panel(str(guild.id))
+        if message is None:
+            return None
+        channel = message.channel
+        mention = channel.mention if isinstance(channel, discord.TextChannel) else "support"
+        return f"Support → {mention}"
+
+    async def _post_jackpot(self, guild: discord.Guild, override_channel_id: str | None) -> str | None:
+        from casino.discord_bot.bot import CasinoBot
+
+        if override_channel_id:
+            config = await self._container.guild_configs.get(str(guild.id))
+            if config.jackpot_channel_id != override_channel_id:
+                await self._container.guild_configs.set_slot(
+                    str(guild.id), GuildConfigSlot.JACKPOT, override_channel_id
+                )
+        if not isinstance(self.bot, CasinoBot):
+            return None
+        message = await self.bot.jackpots.ensure(str(guild.id), channel_id=override_channel_id)
+        if message is None:
+            return None
+        channel = message.channel
+        mention = channel.mention if isinstance(channel, discord.TextChannel) else "jackpot"
+        return f"Jackpot → {mention}"
 
     @admin.command(name="grant-role", description="Grant founder or moderator")
     @app_commands.describe(member="Player", role="founder or moderator")

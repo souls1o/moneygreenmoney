@@ -9,6 +9,7 @@ from casino.errors import AlreadyProcessedError, DepositError, FeatureDisabledEr
 from casino.logging.logger import LogContext, get_logger
 from casino.repositories.transaction_repository import TransactionRepository
 from casino.services.balance_service import BalanceService
+from casino.services.investor_service import InvestorService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.solana_client.deposit_parser import ParsedIncomingTransfer, SolanaDepositParser
@@ -37,6 +38,8 @@ class DepositService:
         parser: SolanaDepositParser,
         unit_of_work: UnitOfWorkFactory,
         normalizer: TextNormalizer,
+        house_repository=None,
+        investors: InvestorService | None = None,
     ) -> None:
         self._users = user_service
         self._balances = balance_service
@@ -46,6 +49,8 @@ class DepositService:
         self._parser = parser
         self._uow = unit_of_work
         self._normalizer = normalizer
+        self._house = house_repository
+        self._investors = investors
         self._on_credited = None
         self._on_house_credited = None
         self._logger = get_logger("casino.deposit")
@@ -82,6 +87,9 @@ class DepositService:
         return targets
 
     async def ingest_signature(self, signature: str, target: DepositWatchTarget) -> UserRecord | None:
+        existing = await self._transactions.find_by_signature(signature)
+        if existing is not None:
+            return None
         parsed = await self._load_incoming(signature, target.address)
         if parsed is None:
             return None
@@ -169,6 +177,9 @@ class DepositService:
         with LogContext.bind(userId=HOUSE_USER_ID, txSignature=parsed.signature):
             try:
                 async with self._uow.begin() as uow:
+                    book_before = 0
+                    if self._house is not None:
+                        book_before = (await self._house.get(session=uow.session)).sol_balance_lamports
                     await self._balances.credit_house_reserve(
                         amount=credited_amount,
                         entry_type=LedgerEntryType.DEPOSIT,
@@ -178,6 +189,10 @@ class DepositService:
                         solana_signature=parsed.signature,
                         session=uow.session,
                     )
+                    if self._investors is not None:
+                        await self._investors.on_founder_inflow(
+                            credited_amount, book_before=book_before, session=uow.session
+                        )
             except AlreadyProcessedError:
                 self._logger.info("house_deposit_duplicate", txSignature=parsed.signature)
                 return

@@ -4,14 +4,17 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal
 
-from casino.domain.enums import CoinSide, GameStatus, RainStatus, UserRole
+from casino.domain.blackjack import BlackjackHand
+from casino.domain.enums import CoinSide, GameStatus, JackpotStatus, RainStatus, TicketStatus, UserRole
 from casino.domain.records import (
     HOUSE_USER_ID,
     GameRecord,
     is_house_seat,
     HouseTreasuryRecord,
+    JackpotRecord,
     LedgerRecord,
     RainRecord,
+    TicketRecord,
     TransactionRecord,
     UserRecord,
 )
@@ -185,6 +188,26 @@ class MemoryUserRepository:
         user.version += 1
         return self._clone(user)
 
+    async def add_investor_shares(self, discord_id: str, shares: int, now: datetime, session=None) -> UserRecord:
+        user = self.users.get(discord_id)
+        if user is None:
+            raise NotFoundError("User was not found.")
+        user.investor_shares += shares
+        user.updated_at = now
+        user.version += 1
+        return self._clone(user)
+
+    async def remove_investor_shares(self, discord_id: str, shares: int, now: datetime, session=None) -> UserRecord:
+        user = self.users.get(discord_id)
+        if user is None:
+            raise NotFoundError("User was not found.")
+        if user.investor_shares < shares:
+            raise InsufficientBalanceError("You do not have that many house shares to withdraw.")
+        user.investor_shares -= shares
+        user.updated_at = now
+        user.version += 1
+        return self._clone(user)
+
     def _clone(self, user: UserRecord) -> UserRecord:
         return UserRecord(
             discord_id=user.discord_id,
@@ -210,6 +233,7 @@ class MemoryUserRepository:
             referred_wagered_lamports=user.referred_wagered_lamports,
             affiliate_earned_lamports=user.affiliate_earned_lamports,
             affiliate_earned_usd=user.affiliate_earned_usd,
+            investor_shares=user.investor_shares,
             version=user.version,
             created_at=user.created_at,
             updated_at=user.updated_at,
@@ -367,6 +391,7 @@ class MemoryGameRepository:
         game.tails_ids = [seat for seat in game.tails_ids if seat != player_id]
         game.ready_ids = [seat for seat in game.ready_ids if seat != player_id]
         game.house_seat_ids = [seat for seat in game.house_seat_ids if seat != player_id]
+        game.target_picks.pop(player_id, None)
         game.version += 1
         return self._clone(game)
 
@@ -441,6 +466,26 @@ class MemoryGameRepository:
             current_round_rolls=list(game.current_round_rolls),
             dice_rolls=list(game.dice_rolls),
             dice_rolling_ids=list(game.dice_rolling_ids),
+            blackjack_player_hands=[
+                BlackjackHand(
+                    cards=list(hand.cards),
+                    bet_lamports=hand.bet_lamports,
+                    stood=hand.stood,
+                    doubled=hand.doubled,
+                    from_split=hand.from_split,
+                    from_split_aces=hand.from_split_aces,
+                    outcome=hand.outcome,
+                )
+                for hand in game.blackjack_player_hands
+            ],
+            blackjack_dealer_cards=list(game.blackjack_dealer_cards),
+            blackjack_hole_hidden=game.blackjack_hole_hidden,
+            blackjack_hand_index=game.blackjack_hand_index,
+            blackjack_card_index=game.blackjack_card_index,
+            target_picks=dict(game.target_picks),
+            target_number=game.target_number,
+            limbo_target=game.limbo_target,
+            limbo_result=game.limbo_result,
         )
 
 
@@ -561,6 +606,85 @@ class MemoryRainRepository:
         )
 
 
+class MemoryJackpotRepository:
+    def __init__(self) -> None:
+        self.items: dict[str, JackpotRecord] = {}
+
+    async def insert(self, jackpot: JackpotRecord, session=None) -> None:
+        self.items[jackpot.jackpot_id] = jackpot
+
+    async def find_by_id(self, jackpot_id: str, session=None) -> JackpotRecord | None:
+        return self._clone(self.items.get(jackpot_id))
+
+    async def find_live(self, guild_id: str, session=None) -> JackpotRecord | None:
+        for jackpot in self.items.values():
+            if jackpot.guild_id == guild_id and jackpot.status in {
+                JackpotStatus.OPEN,
+                JackpotStatus.SHOWING,
+                JackpotStatus.SETTLING,
+            }:
+                return self._clone(jackpot)
+        return None
+
+    async def replace(self, jackpot: JackpotRecord, session=None) -> bool:
+        current = self.items.get(jackpot.jackpot_id)
+        if current is None or current.version != jackpot.version:
+            return False
+        jackpot.version += 1
+        self.items[jackpot.jackpot_id] = jackpot
+        return True
+
+    async def set_listing_ref(self, jackpot_id: str, channel_id: str, message_id: str, session=None) -> None:
+        jackpot = self.items[jackpot_id]
+        jackpot.channel_id = channel_id
+        jackpot.message_id = message_id
+
+    async def list_due(self, now, session=None) -> list[JackpotRecord]:
+        return [
+            self._clone(jackpot)
+            for jackpot in self.items.values()
+            if jackpot.status is JackpotStatus.OPEN
+            and jackpot.opener_id is not None
+            and jackpot.expires_at is not None
+            and jackpot.expires_at <= now
+        ]
+
+    async def list_reveal_due(self, now, session=None) -> list[JackpotRecord]:
+        return [
+            self._clone(jackpot)
+            for jackpot in self.items.values()
+            if jackpot.status is JackpotStatus.SHOWING
+            and jackpot.reveal_until is not None
+            and jackpot.reveal_until <= now
+        ]
+
+    async def list_live(self, session=None) -> list[JackpotRecord]:
+        return [
+            self._clone(jackpot)
+            for jackpot in self.items.values()
+            if jackpot.status in {JackpotStatus.OPEN, JackpotStatus.SHOWING, JackpotStatus.SETTLING}
+        ]
+
+    async def try_begin_settle(self, jackpot_id: str, now, session=None) -> JackpotRecord | None:
+        jackpot = self.items.get(jackpot_id)
+        if jackpot is None or jackpot.status is not JackpotStatus.OPEN:
+            return None
+        if jackpot.opener_id is None or jackpot.expires_at is None or jackpot.expires_at > now:
+            return None
+        jackpot.status = JackpotStatus.SETTLING
+        jackpot.version += 1
+        return self._clone(jackpot)
+
+    def _clone(self, jackpot: JackpotRecord | None) -> JackpotRecord | None:
+        if jackpot is None:
+            return None
+        return replace(
+            jackpot,
+            entries_lamports=dict(jackpot.entries_lamports),
+            ledger_ids=list(jackpot.ledger_ids),
+        )
+
+
 class MemoryHouseRepository:
     def __init__(self) -> None:
         self.record = HouseTreasuryRecord()
@@ -599,6 +723,97 @@ class MemoryHouseRepository:
         key = game_type.value
         self.next_game_numbers[key] = self.next_game_numbers.get(key, 0) + 1
         return self.next_game_numbers[key]
+
+    async def seed_founder_shares(self, shares: int, now: datetime, session=None) -> HouseTreasuryRecord:
+        if self.record.founder_shares == 0 and shares > 0:
+            self.record.founder_shares = shares
+            self.record.updated_at = now
+            self.record.version += 1
+        return self.record
+
+    async def adjust_shares(
+        self, *, founder_delta: int = 0, investor_delta: int = 0, now: datetime, session=None
+    ) -> HouseTreasuryRecord:
+        if founder_delta < 0 and self.record.founder_shares < -founder_delta:
+            raise InsufficientHouseReserveError("House capital shares could not be updated.")
+        if investor_delta < 0 and self.record.investor_shares < -investor_delta:
+            raise InsufficientHouseReserveError("House capital shares could not be updated.")
+        self.record.founder_shares += founder_delta
+        self.record.investor_shares += investor_delta
+        self.record.updated_at = now
+        self.record.version += 1
+        return self.record
+
+
+class MemoryTicketRepository:
+    def __init__(self) -> None:
+        self.items: dict[str, TicketRecord] = {}
+
+    def _clone(self, ticket: TicketRecord | None) -> TicketRecord | None:
+        if ticket is None:
+            return None
+        return replace(ticket, participant_ids=list(ticket.participant_ids), chat_log=list(ticket.chat_log))
+
+    async def insert(self, ticket: TicketRecord, session=None) -> None:
+        self.items[ticket.ticket_id] = ticket
+
+    async def find_by_id(self, ticket_id: str, session=None) -> TicketRecord | None:
+        return self._clone(self.items.get(ticket_id))
+
+    async def find_by_channel(self, channel_id: str, session=None) -> TicketRecord | None:
+        for ticket in self.items.values():
+            if ticket.channel_id == channel_id:
+                return self._clone(ticket)
+        return None
+
+    async def find_open_by_opener(self, guild_id: str, opener_id: str, session=None) -> TicketRecord | None:
+        for ticket in self.items.values():
+            if (
+                ticket.guild_id == guild_id
+                and ticket.opener_id == opener_id
+                and ticket.status in {TicketStatus.OPEN, TicketStatus.CLAIMED}
+            ):
+                return self._clone(ticket)
+        return None
+
+    async def replace(self, ticket: TicketRecord, session=None) -> bool:
+        current = self.items.get(ticket.ticket_id)
+        if current is None or current.version != ticket.version:
+            return False
+        ticket.version += 1
+        self.items[ticket.ticket_id] = ticket
+        return True
+
+    async def set_channel(self, ticket_id: str, channel_id: str, now, session=None) -> TicketRecord | None:
+        ticket = self.items.get(ticket_id)
+        if ticket is None:
+            return None
+        ticket.channel_id = channel_id
+        ticket.version += 1
+        return self._clone(ticket)
+
+    async def append_chat(self, ticket_id: str, event: dict, session=None) -> None:
+        ticket = self.items.get(ticket_id)
+        if ticket is None:
+            return
+        ticket.chat_log = list(ticket.chat_log) + [event]
+
+    async def append_chat_by_channel(self, channel_id: str, event: dict, session=None) -> None:
+        for ticket in self.items.values():
+            if ticket.channel_id == channel_id:
+                ticket.chat_log = list(ticket.chat_log) + [event]
+                return
+
+    async def mark_closed(self, ticket_id: str, actor_id: str, reason: str, now, session=None) -> TicketRecord | None:
+        ticket = self.items.get(ticket_id)
+        if ticket is None or ticket.status is TicketStatus.CLOSED:
+            return None
+        ticket.status = TicketStatus.CLOSED
+        ticket.closed_by = actor_id
+        ticket.closed_at = now
+        ticket.close_reason = reason
+        ticket.version += 1
+        return self._clone(ticket)
 
 
 class NullUnitOfWork:

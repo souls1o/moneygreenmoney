@@ -50,3 +50,18 @@ class GuildConfigService:
         config = await self._configs.set_verify_message(guild_id, message_id, self._clock.now())
         self._logger.info("verify_panel_stored", guildId=guild_id, messageId=message_id)
         return config
+
+    async def take_next_ticket_number(self, guild_id: str) -> int:
+        number = await self._configs.take_next_ticket_number(guild_id)
+        self._logger.info("ticket_number_allocated", guildId=guild_id, ticketNumber=number)
+        return number
+
+    async def set_support_message(self, guild_id: str, message_id: str) -> GuildConfigRecord:
+        config = await self._configs.set_support_message(guild_id, message_id, self._clock.now())
+        self._logger.info("support_panel_stored", guildId=guild_id, messageId=message_id)
+        return config
+
+    async def set_jackpot_message(self, guild_id: str, message_id: str) -> GuildConfigRecord:
+        config = await self._configs.set_jackpot_message(guild_id, message_id, self._clock.now())
+        self._logger.info("jackpot_panel_stored", guildId=guild_id, messageId=message_id)
+        return config

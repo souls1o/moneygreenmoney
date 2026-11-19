@@ -24,6 +24,11 @@ class AffiliateError(ValidationError):
     user_message = "That affiliate action is not allowed."
 
 
+class InvestorError(ValidationError):
+    code = "investor_error"
+    user_message = "That investor action is not allowed."
+
+
 class NotFoundError(AppError):
     code = "not_found"
     user_message = "The requested resource was not found."
@@ -87,6 +92,18 @@ class GameError(AppError):
 class RainError(AppError):
     code = "rain_error"
     user_message = "This rain cannot be completed."
+    http_status = 409
+
+
+class JackpotError(AppError):
+    code = "jackpot_error"
+    user_message = "This jackpot cannot be completed."
+    http_status = 409
+
+
+class TicketError(AppError):
+    code = "ticket_error"
+    user_message = "This ticket cannot be completed."
     http_status = 409
 
 

@@ -297,6 +297,8 @@ def test_howto_covers_games_fees_and_affiliate() -> None:
     assert "/coinflip" in text
     assert "/dice" in text
     assert "3% of the total pot" in text
+    assert "/limbo" in text
+    assert "No extra 3% game fee" in text
     assert "$0.01" in text
     assert "/affiliate" in text
     assert "5–10%" in text or "5-10%" in text

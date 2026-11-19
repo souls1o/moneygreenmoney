@@ -12,6 +12,10 @@ class IdentifierFactory:
     GAME_PREFIXES = {
         GameType.COINFLIP: "cf",
         GameType.DICE: "dc",
+        GameType.BLACKJACK: "bj",
+        GameType.TARGET: "tg",
+        GameType.LIMBO: "lb",
+        GameType.JACKPOT: "jp",
     }
     LEDGER_PREFIX = "ld"
     TX_PREFIX = "tx"
@@ -35,3 +39,9 @@ class IdentifierFactory:
 
     def rain_id(self) -> str:
         return f"rn_{uuid.uuid4().hex}"
+
+    def ticket_id(self) -> str:
+        return f"tk_{uuid.uuid4().hex}"
+
+    def jackpot_id(self) -> str:
+        return f"jp_{uuid.uuid4().hex}"

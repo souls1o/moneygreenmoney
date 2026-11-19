@@ -39,3 +39,50 @@ async def test_deposit_worker_stops_and_backs_off_after_rpc_failure() -> None:
     clock.advance(61)
     await worker.tick()
     assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_deposit_worker_round_robins_wallets() -> None:
+    clock = FrozenClock()
+    seen: list[str] = []
+
+    async def get_signatures(address, **_kwargs):
+        seen.append(address)
+        return []
+
+    users = [DepositWatchTarget(address=f"u{i}", user_id=str(i)) for i in range(6)]
+    deposits = SimpleNamespace(watch_targets=AsyncMock(return_value=users))
+    rpc = SimpleNamespace(is_configured=True, get_signatures=get_signatures)
+    cursors = SimpleNamespace(get=AsyncMock(return_value=None), set=AsyncMock())
+    settings = SimpleNamespace(deposit_wallets_per_tick=2, deposit_rpc_gap_seconds=0)
+    worker = DepositMonitorWorker(deposits, rpc, cursors, clock, settings)  # type: ignore[arg-type]
+
+    await worker.tick()
+    await worker.tick()
+    assert seen == ["u0", "u1", "u2", "u3"]
+
+
+@pytest.mark.asyncio
+async def test_deposit_worker_skips_known_signatures_without_tx_fetch() -> None:
+    clock = FrozenClock()
+    parsed = {"n": 0}
+
+    async def ingest_signature(signature, target):
+        parsed["n"] += 1
+        return None
+
+    deposits = SimpleNamespace(
+        watch_targets=AsyncMock(return_value=[DepositWatchTarget(address="addr1", user_id="1")]),
+        ingest_signature=ingest_signature,
+    )
+
+    async def get_signatures(*_args, **_kwargs):
+        return ["sig-known"]
+
+    rpc = SimpleNamespace(is_configured=True, get_signatures=get_signatures)
+    cursors = SimpleNamespace(get=AsyncMock(return_value=None), set=AsyncMock())
+    settings = SimpleNamespace(deposit_wallets_per_tick=4, deposit_rpc_gap_seconds=0)
+    worker = DepositMonitorWorker(deposits, rpc, cursors, clock, settings)  # type: ignore[arg-type]
+    await worker.tick()
+    assert parsed["n"] == 1
+    cursors.set.assert_awaited()

@@ -13,10 +13,14 @@ class ValidationService:
         math_service: MathService,
         min_bet_usd: Decimal,
         supported_currencies: tuple[str, ...],
+        min_invest_usd: Decimal = Decimal("1"),
+        max_invest_usd: Decimal = Decimal("100000"),
     ) -> None:
         self._math = math_service
         self._min_bet_usd = min_bet_usd
         self._supported_currencies = supported_currencies
+        self._min_invest_usd = min_invest_usd
+        self._max_invest_usd = max_invest_usd
 
     def parse_fiat_amount(self, raw: str) -> Decimal:
         return self._math.parse_positive_decimal(raw)
@@ -56,4 +60,14 @@ class ValidationService:
         if amount_usd < self._min_bet_usd:
             raise ValidationError(
                 f"Minimum bet is {self._math.format_fiat_symbol(self._min_bet_usd, 'USD')}."
+            )
+
+    def validate_invest(self, amount_usd: Decimal) -> None:
+        if amount_usd < self._min_invest_usd:
+            raise ValidationError(
+                f"Minimum invest is {self._math.format_fiat_symbol(self._min_invest_usd, 'USD')}."
+            )
+        if amount_usd > self._max_invest_usd:
+            raise ValidationError(
+                f"Maximum invest is {self._math.format_fiat_symbol(self._max_invest_usd, 'USD')}."
             )

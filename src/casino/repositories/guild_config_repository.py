@@ -16,6 +16,10 @@ _SLOT_FIELDS: dict[GuildConfigSlot, str] = {
     GuildConfigSlot.OPEN_GAMES: "openGamesChannelId",
     GuildConfigSlot.OPEN_COINFLIP: "openCoinflipChannelId",
     GuildConfigSlot.OPEN_DICE: "openDiceChannelId",
+    GuildConfigSlot.OPEN_BLACKJACK: "openBlackjackChannelId",
+    GuildConfigSlot.OPEN_TARGET: "openTargetChannelId",
+    GuildConfigSlot.BLACKJACK_OUTCOMES: "blackjackOutcomesChannelId",
+    GuildConfigSlot.TARGET_OUTCOMES: "targetOutcomesChannelId",
     GuildConfigSlot.COINFLIP_OUTCOMES: "coinflipOutcomesChannelId",
     GuildConfigSlot.COINFLIP_CATEGORY: "coinflipCategoryId",
     GuildConfigSlot.DICE_OUTCOMES: "diceOutcomesChannelId",
@@ -28,6 +32,13 @@ _SLOT_FIELDS: dict[GuildConfigSlot, str] = {
     GuildConfigSlot.RAIN_PING: "rainPingRoleId",
     GuildConfigSlot.VERIFY: "verifyChannelId",
     GuildConfigSlot.MEMBER_ROLE: "memberRoleId",
+    GuildConfigSlot.INVESTOR_ROLE: "investorRoleId",
+    GuildConfigSlot.SUPPORT: "supportChannelId",
+    GuildConfigSlot.SUPPORT_CATEGORY: "supportCategoryId",
+    GuildConfigSlot.SUPPORT_ROLE: "supportRoleId",
+    GuildConfigSlot.SUPPORT_LOGS: "supportLogsChannelId",
+    GuildConfigSlot.JACKPOT: "jackpotChannelId",
+    GuildConfigSlot.JACKPOT_HISTORY: "jackpotHistoryChannelId",
 }
 
 
@@ -59,6 +70,10 @@ class GuildConfigRepository(MongoRepository):
             update["$unset"] = {"provablyFairMessageId": ""}
         if slot is GuildConfigSlot.VERIFY:
             update["$unset"] = {"verifyMessageId": ""}
+        if slot is GuildConfigSlot.SUPPORT:
+            update["$unset"] = {"supportMessageId": ""}
+        if slot is GuildConfigSlot.JACKPOT:
+            update["$unset"] = {"jackpotMessageId": ""}
         document = await self.collection.find_one_and_update(
             {"guildId": guild_id},
             update,
@@ -116,6 +131,63 @@ class GuildConfigRepository(MongoRepository):
             {"guildId": guild_id},
             {
                 "$set": {"verifyMessageId": message_id, "updatedAt": now},
+                "$inc": {"version": 1},
+                "$setOnInsert": {"guildId": guild_id},
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        return self._mapper.guild_config_from_document(document)
+
+    async def take_next_ticket_number(
+        self,
+        guild_id: str,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> int:
+        document = await self.collection.find_one_and_update(
+            {"guildId": guild_id},
+            {
+                "$inc": {"nextTicketNumber": 1},
+                "$setOnInsert": {"guildId": guild_id},
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        return int((document or {}).get("nextTicketNumber") or 1)
+
+    async def set_support_message(
+        self,
+        guild_id: str,
+        message_id: str,
+        now: datetime,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> GuildConfigRecord:
+        document = await self.collection.find_one_and_update(
+            {"guildId": guild_id},
+            {
+                "$set": {"supportMessageId": message_id, "updatedAt": now},
+                "$inc": {"version": 1},
+                "$setOnInsert": {"guildId": guild_id},
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        return self._mapper.guild_config_from_document(document)
+
+    async def set_jackpot_message(
+        self,
+        guild_id: str,
+        message_id: str,
+        now: datetime,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> GuildConfigRecord:
+        document = await self.collection.find_one_and_update(
+            {"guildId": guild_id},
+            {
+                "$set": {"jackpotMessageId": message_id, "updatedAt": now},
                 "$inc": {"version": 1},
                 "$setOnInsert": {"guildId": guild_id},
             },

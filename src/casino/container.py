@@ -15,10 +15,12 @@ from casino.repositories.cursor_repository import CursorRepository
 from casino.repositories.game_repository import GameRepository
 from casino.repositories.guild_config_repository import GuildConfigRepository
 from casino.repositories.house_repository import HouseRepository
+from casino.repositories.jackpot_repository import JackpotRepository
 from casino.repositories.ledger_repository import LedgerRepository
 from casino.repositories.lock_repository import LockRepository
 from casino.repositories.mappers import DocumentMapper
 from casino.repositories.rain_repository import RainRepository
+from casino.repositories.ticket_repository import TicketRepository
 from casino.repositories.rate_limit_repository import RateLimitRepository
 from casino.repositories.transaction_repository import TransactionRepository
 from casino.repositories.user_repository import UserRepository
@@ -29,6 +31,8 @@ from casino.services.deposit_service import DepositService
 from casino.services.game_service import GameService
 from casino.services.guild_config_service import GuildConfigService
 from casino.services.house_stats_service import HouseStatsService
+from casino.services.investor_service import InvestorService
+from casino.services.jackpot_service import JackpotService
 from casino.services.ledger_service import LedgerService
 from casino.services.permission_service import PermissionService
 from casino.services.price_service import PriceService
@@ -36,6 +40,7 @@ from casino.services.rain_service import RainService
 from casino.services.rank_service import RankService
 from casino.services.rate_limit_service import RateLimitService
 from casino.services.settings_service import SettingsService
+from casino.services.ticket_service import TicketService
 from casino.services.tip_service import TipService
 from casino.services.user_service import UserService
 from casino.services.validation_service import ValidationService
@@ -54,6 +59,7 @@ from casino.utils.text import TextNormalizer
 from casino.workers.deposit_worker import DepositMonitorWorker
 from casino.workers.expiry_worker import GameExpiryWorker
 from casino.workers.locks import DistributedLockService
+from casino.workers.jackpot_worker import JackpotWorker
 from casino.workers.rain_worker import RainExpiryWorker
 from casino.workers.scheduler import WorkerScheduler
 
@@ -80,14 +86,18 @@ class AppContainer:
     rate_limits: RateLimitService
     admin: AdminService
     house_stats: HouseStatsService
+    investors: InvestorService
     guild_configs: GuildConfigService
     verification: VerificationService
     rains: RainService
+    jackpots: JackpotService
+    tickets: TicketService
     tips: TipService
     workers: WorkerScheduler
     deposit_worker: DepositMonitorWorker
     expiry_worker: GameExpiryWorker
     rain_worker: RainExpiryWorker
+    jackpot_worker: JackpotWorker
     house: HouseRepository
     fair: ProvablyFairService
 
@@ -106,6 +116,11 @@ class AppContainer:
             "rain-expiry",
             self.settings.expiry_poll_interval_seconds,
             self.rain_worker.tick,
+        )
+        self.workers.start(
+            "jackpot",
+            self.settings.expiry_poll_interval_seconds,
+            self.jackpot_worker.tick,
         )
         if self.settings.enable_deposit_monitor and self.solana.is_configured:
             self.workers.start(
@@ -163,6 +178,8 @@ class ContainerFactory:
             math,
             Decimal(settings.min_bet_usd),
             settings.currency_codes(),
+            Decimal(settings.min_invest_usd),
+            Decimal(settings.max_invest_usd),
         )
         fair = ProvablyFairService()
         affiliates = AffiliateService(users_repo, users, balances, clock)
@@ -184,6 +201,20 @@ class ContainerFactory:
         )
         guild_configs = GuildConfigService(guild_config_repo, clock)
         verification = VerificationService(clock)
+        house_stats = HouseStatsService(games_repo, house_repo, price, clock, solana)
+        investors = InvestorService(
+            users,
+            users_repo,
+            balances,
+            house_repo,
+            price,
+            validation,
+            math,
+            clock,
+            uow,
+            settings,
+            house_stats,
+        )
         deposits = DepositService(
             users,
             balances,
@@ -193,6 +224,8 @@ class ContainerFactory:
             SolanaDepositParser(),
             uow,
             TextNormalizer(),
+            house_repo,
+            investors,
         )
         address_validator = SolanaAddressValidator()
         settings_service = SettingsService(users, validation, address_validator, settings)
@@ -207,11 +240,11 @@ class ContainerFactory:
             solana,
             address_validator,
             tx_repo,
+            investors,
         )
-        house_stats = HouseStatsService(games_repo, house_repo, price, clock, solana)
         lock_service = DistributedLockService(lock_repo, clock, identifiers)
         workers = WorkerScheduler(lock_service)
-        deposit_worker = DepositMonitorWorker(deposits, solana, cursor_repo, clock)
+        deposit_worker = DepositMonitorWorker(deposits, solana, cursor_repo, clock, settings)
         expiry_worker = GameExpiryWorker(games)
         rains_repo = RainRepository(mongo, mapper)
         rains = RainService(
@@ -229,6 +262,29 @@ class ContainerFactory:
             house_repo,
         )
         rain_worker = RainExpiryWorker(rains)
+        jackpots_repo = JackpotRepository(mongo, mapper)
+        jackpots = JackpotService(
+            jackpots_repo,
+            users,
+            users_repo,
+            balances,
+            price,
+            validation,
+            math,
+            fair,
+            identifiers,
+            clock,
+            uow,
+            settings,
+            house_repo,
+        )
+        jackpot_worker = JackpotWorker(jackpots)
+        tickets = TicketService(
+            TicketRepository(mongo, mapper),
+            guild_configs,
+            identifiers,
+            clock,
+        )
         tips = TipService(users, balances, price, uow)
 
         return AppContainer(
@@ -262,14 +318,18 @@ class ContainerFactory:
             rate_limits=RateLimitService(rate_repo, clock, settings),
             admin=admin,
             house_stats=house_stats,
+            investors=investors,
             guild_configs=guild_configs,
             verification=verification,
             rains=rains,
+            jackpots=jackpots,
+            tickets=tickets,
             tips=tips,
             workers=workers,
             deposit_worker=deposit_worker,
             expiry_worker=expiry_worker,
             rain_worker=rain_worker,
+            jackpot_worker=jackpot_worker,
             house=house_repo,
             fair=fair,
         )

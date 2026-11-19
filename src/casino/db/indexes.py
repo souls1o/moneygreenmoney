@@ -11,6 +11,8 @@ from casino.db.mongo import (
     COLLECTION_LOCKS,
     COLLECTION_RAINS,
     COLLECTION_RATE_LIMITS,
+    COLLECTION_TICKETS,
+    COLLECTION_JACKPOTS,
     COLLECTION_TRANSACTIONS,
     COLLECTION_USERS,
     MongoDatabase,
@@ -109,6 +111,22 @@ class IndexInstaller:
                 IndexModel([("status", ASCENDING), ("createdAt", DESCENDING)]),
                 IndexModel([("guildId", ASCENDING), ("status", ASCENDING)], sparse=True),
                 IndexModel([("channelId", ASCENDING)], sparse=True),
+            ]
+        )
+        await db[COLLECTION_JACKPOTS].create_indexes(
+            [
+                IndexModel([("jackpotId", ASCENDING)], unique=True),
+                IndexModel([("guildId", ASCENDING), ("status", ASCENDING)]),
+                IndexModel([("status", ASCENDING), ("expiresAt", ASCENDING)]),
+                IndexModel([("status", ASCENDING), ("revealUntil", ASCENDING)]),
+            ]
+        )
+        await db[COLLECTION_TICKETS].create_indexes(
+            [
+                IndexModel([("ticketId", ASCENDING)], unique=True),
+                IndexModel([("channelId", ASCENDING)], unique=True, sparse=True),
+                IndexModel([("guildId", ASCENDING), ("status", ASCENDING), ("createdAt", DESCENDING)]),
+                IndexModel([("guildId", ASCENDING), ("openerId", ASCENDING), ("status", ASCENDING)]),
             ]
         )
         self._logger.info("mongodb_indexes_installed")

@@ -17,6 +17,8 @@ COLLECTION_LOCKS = "locks"
 COLLECTION_RATE_LIMITS = "rate_limits"
 COLLECTION_GUILD_CONFIGS = "guild_configs"
 COLLECTION_RAINS = "rains"
+COLLECTION_TICKETS = "tickets"
+COLLECTION_JACKPOTS = "jackpots"
 
 
 class MongoDatabase:

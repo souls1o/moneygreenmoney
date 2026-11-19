@@ -121,3 +121,63 @@ class HouseRepository(MongoRepository):
         )
         numbers = (document or {}).get("nextGameNumbers") or {}
         return int(numbers.get(game_type.value) or 1)
+
+    async def seed_founder_shares(
+        self,
+        shares: int,
+        now: datetime,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> HouseTreasuryRecord:
+        if shares <= 0:
+            return await self.get(session=session)
+        document = await self.collection.find_one_and_update(
+            {
+                "name": HOUSE_DOCUMENT_NAME,
+                "$or": [
+                    {"founderShares": {"$exists": False}},
+                    {"founderShares": None},
+                    {"founderShares": 0},
+                ],
+            },
+            {
+                "$set": {"founderShares": shares, "updatedAt": now},
+                "$inc": {"version": 1},
+            },
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        if document is None:
+            return await self.get(session=session)
+        return self._mapper.house_from_document(document)
+
+    async def adjust_shares(
+        self,
+        *,
+        founder_delta: int = 0,
+        investor_delta: int = 0,
+        now: datetime,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> HouseTreasuryRecord:
+        if founder_delta == 0 and investor_delta == 0:
+            return await self.get(session=session)
+        filt: dict[str, object] = {"name": HOUSE_DOCUMENT_NAME}
+        if founder_delta < 0:
+            filt["founderShares"] = {"$gte": -founder_delta}
+        if investor_delta < 0:
+            filt["investorShares"] = {"$gte": -investor_delta}
+        document = await self.collection.find_one_and_update(
+            filt,
+            {
+                "$inc": {
+                    "founderShares": founder_delta,
+                    "investorShares": investor_delta,
+                    "version": 1,
+                },
+                "$set": {"updatedAt": now},
+            },
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        if document is None:
+            raise InsufficientHouseReserveError("House capital shares could not be updated.")
+        return self._mapper.house_from_document(document)

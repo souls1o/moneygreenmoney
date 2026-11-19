@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from decimal import Decimal
 
 import discord
 
@@ -12,6 +14,13 @@ from casino.discord_bot.presentation.embeds import EmbedFactory
 from casino.discord_bot.presentation.notifications import GameNotificationPresenter
 from casino.domain.enums import GameStatus
 from casino.domain.records import DicePlayResult, GameRecord, is_house_seat
+from casino.domain.limbo import (
+    LIMBO_CRASH_SECONDS,
+    LIMBO_CRASH_STEP,
+    LIMBO_START,
+    limbo_crash_at,
+)
+from casino.domain.target import target_draw_frames, target_draw_interval
 from casino.errors import GameError
 from casino.logging.logger import get_logger
 from casino.utils.channel_names import GameChannelNamer
@@ -39,7 +48,9 @@ class GameTablePresenter:
     async def provision(self, game: GameRecord, creator: discord.abc.User) -> GameRecord:
         listing_channel = await self._open_games_destination(game)
         if listing_channel is None:
-            raise GameError("Ask an admin to set the open coinflip or dice channel in `/admin config`.")
+            raise GameError(
+                "Ask an admin to set the open coinflip, dice, blackjack, or target channel in `/admin config`."
+            )
         refreshed = game
         if game.guild_id:
             await self._container.games.attach_guild(game.game_id, game.guild_id)
@@ -47,7 +58,11 @@ class GameTablePresenter:
             number = await self._container.guild_configs.take_next_table_number(game.guild_id)
             await self._container.games.attach_table_number(game.game_id, number)
             game.table_number = number
-        private = await self._create_private_channel(game, creator)
+        private = (
+            None
+            if game.is_blackjack() or game.is_target() or game.is_limbo()
+            else await self._create_private_channel(game, creator)
+        )
         if private is not None:
             overview_panel = self._embeds.table_overview(game)
             overview = await private.send(**overview_panel.send_kwargs())
@@ -59,6 +74,50 @@ class GameTablePresenter:
         listing = await listing_channel.send(**listing_panel.send_kwargs())
         listing_panel.stop()
         await self._container.games.attach_listing(game.game_id, str(listing.channel.id), str(listing.id))
+        return await self._container.games.get(game.game_id)
+
+    async def provision_here(self, game: GameRecord, channel: discord.abc.Messageable) -> GameRecord:
+        if game.guild_id:
+            await self._container.games.attach_guild(game.game_id, game.guild_id)
+        panel = await self._embeds.blackjack_panel(game)
+        posted = await channel.send(**panel.send_kwargs())
+        panel.stop()
+        await self._container.games.attach_listing(game.game_id, str(posted.channel.id), str(posted.id))
+        return await self._container.games.get(game.game_id)
+
+    async def provision_blackjack_interaction(
+        self, game: GameRecord, interaction: discord.Interaction
+    ) -> GameRecord:
+        if game.guild_id:
+            await self._container.games.attach_guild(game.game_id, game.guild_id)
+        panel = await self._embeds.blackjack_panel(game)
+        await interaction.edit_original_response(**panel.edit_kwargs())
+        panel.stop()
+        message = await interaction.original_response()
+        channel_id = str(interaction.channel_id or message.channel.id)
+        await self._container.games.attach_listing(game.game_id, channel_id, str(message.id))
+        return await self._container.games.get(game.game_id)
+
+    async def provision_limbo_interaction(
+        self, game: GameRecord, interaction: discord.Interaction
+    ) -> GameRecord:
+        if game.guild_id:
+            await self._container.games.attach_guild(game.game_id, game.guild_id)
+        panel = await self._embeds.limbo_panel(game, crash_value=LIMBO_START, reveal=False)
+        await interaction.edit_original_response(**panel.edit_kwargs())
+        panel.stop()
+        message = await interaction.original_response()
+        channel_id = str(interaction.channel_id or message.channel.id)
+        await self._container.games.attach_listing(game.game_id, channel_id, str(message.id))
+        return await self._container.games.get(game.game_id)
+
+    async def provision_public(self, game: GameRecord, channel: discord.abc.Messageable) -> GameRecord:
+        if game.guild_id:
+            await self._container.games.attach_guild(game.game_id, game.guild_id)
+        panel = self._embeds.table_overview(game, include_join=True)
+        posted = await channel.send(**panel.send_kwargs())
+        panel.stop()
+        await self._container.games.attach_listing(game.game_id, str(posted.channel.id), str(posted.id))
         return await self._container.games.get(game.game_id)
 
     async def provision_inline(self, game: GameRecord, interaction: discord.Interaction) -> GameRecord:
@@ -107,12 +166,234 @@ class GameTablePresenter:
         except Exception:
             self._logger.exception("lobby_refresh_failed", gameId=game.game_id)
 
+    async def handle_blackjack_action(
+        self,
+        game_id: str,
+        player_id: str,
+        action,
+        *,
+        interaction: discord.Interaction | None = None,
+    ) -> GameRecord:
+        async with self._dice_lock(game_id):
+            game = await self._container.games.blackjack_action(game_id, player_id, action)
+            if game.status is GameStatus.COMPLETED:
+                await self._animate_blackjack_dealer(game, interaction=interaction)
+                await self.on_resolved(game, interaction=interaction)
+            else:
+                await self._edit_listing(
+                    game, await self._embeds.blackjack_panel(game), interaction=interaction
+                )
+            return game
+
+    async def handle_blackjack_redeal(
+        self,
+        source_game_id: str,
+        player_id: str,
+        *,
+        fiat_amount: Decimal | None = None,
+        interaction: discord.Interaction | None = None,
+    ) -> GameRecord:
+        from casino.domain.enums import CoinSide, GameType
+
+        source = await self._container.games.get(source_game_id)
+        if not source.is_blackjack() or source.status is not GameStatus.COMPLETED:
+            raise GameError("Start a new hand from a finished blackjack table.")
+        if player_id != source.creator_id:
+            raise GameError("Only the player can deal a new hand.")
+        modal = getattr(interaction, "type", None) is discord.InteractionType.modal_submit
+        table_message = getattr(interaction, "message", None) if interaction is not None else None
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=bool(modal))
+        amount = source.bet_amount_fiat if fiat_amount is None else fiat_amount
+        game = await self._container.games.create_game(
+            player1_id=player_id,
+            fiat_amount=amount,
+            side=CoinSide.HEADS,
+            game_type=GameType.BLACKJACK,
+            guild_id=source.guild_id,
+        )
+        if source.guild_id:
+            await self._container.games.attach_guild(game.game_id, source.guild_id)
+        panel = await self._embeds.blackjack_panel(game)
+        listing_interaction = None if modal else interaction
+        edited = False
+        if modal and table_message is not None:
+            try:
+                await table_message.edit(**panel.edit_kwargs())
+                panel.stop()
+                edited = True
+            except discord.HTTPException:
+                edited = False
+        if not edited:
+            await self._edit_listing(source, panel, interaction=listing_interaction)
+        channel_id = source.channel_id
+        message_id = source.message_id
+        if table_message is not None:
+            channel_id = str(table_message.channel.id)
+            message_id = str(table_message.id)
+        if channel_id and message_id:
+            await self._container.games.attach_listing(game.game_id, channel_id, message_id)
+        if game.status is GameStatus.COMPLETED:
+            await self.on_resolved(game, interaction=listing_interaction)
+        return game
+
+    async def handle_limbo_redeal(
+        self,
+        source_game_id: str,
+        player_id: str,
+        *,
+        fiat_amount: Decimal | None = None,
+        limbo_target=None,
+        interaction: discord.Interaction | None = None,
+    ) -> GameRecord:
+        from casino.domain.enums import CoinSide, GameType
+
+        source = await self._container.games.get(source_game_id)
+        if not source.is_limbo() or source.status is not GameStatus.COMPLETED:
+            raise GameError("Start a new round from a finished limbo game.")
+        if player_id != source.creator_id:
+            raise GameError("Only the player can start a new round.")
+        modal = getattr(interaction, "type", None) is discord.InteractionType.modal_submit
+        table_message = getattr(interaction, "message", None) if interaction is not None else None
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=bool(modal))
+        amount = source.bet_amount_fiat if fiat_amount is None else fiat_amount
+        target = source.limbo_target if limbo_target is None else limbo_target
+        game = await self._container.games.create_game(
+            player1_id=player_id,
+            fiat_amount=amount,
+            side=CoinSide.HEADS,
+            game_type=GameType.LIMBO,
+            guild_id=source.guild_id,
+            limbo_target=target,
+        )
+        if source.guild_id:
+            await self._container.games.attach_guild(game.game_id, source.guild_id)
+        panel = await self._embeds.limbo_panel(game, crash_value=LIMBO_START, reveal=False)
+        listing_interaction = None if modal else interaction
+        edited = False
+        if modal and table_message is not None:
+            try:
+                await table_message.edit(**panel.edit_kwargs())
+                panel.stop()
+                edited = True
+            except discord.HTTPException:
+                edited = False
+        if not edited:
+            await self._edit_listing(source, panel, interaction=listing_interaction)
+        channel_id = source.channel_id
+        message_id = source.message_id
+        if table_message is not None:
+            channel_id = str(table_message.channel.id)
+            message_id = str(table_message.id)
+        if channel_id and message_id:
+            await self._container.games.attach_listing(game.game_id, channel_id, message_id)
+            game.channel_id = channel_id
+            game.message_id = message_id
+        if game.status is GameStatus.COMPLETED:
+            await self.on_resolved(game, interaction=listing_interaction)
+        return game
+
+    async def _animate_blackjack_dealer(
+        self,
+        game: GameRecord,
+        *,
+        interaction: discord.Interaction | None = None,
+    ) -> None:
+        cards = list(game.blackjack_dealer_cards)
+        if not cards:
+            return
+        start = min(2, len(cards))
+        for count in range(start, len(cards) + 1):
+            panel = await self._embeds.blackjack_panel(
+                game,
+                dealer_cards=cards[:count],
+                show_result=False,
+            )
+            await self._edit_listing(game, panel, interaction=interaction)
+            await asyncio.sleep(1)
+
+    async def _animate_limbo_crash(
+        self,
+        game: GameRecord,
+        *,
+        interaction: discord.Interaction | None = None,
+    ) -> None:
+        crash = game.limbo_result or LIMBO_START
+        climbing = await self._embeds.user_balance_line(game, conceal_payout=True)
+        started = time.monotonic()
+        last: Decimal | None = None
+        while True:
+            elapsed = time.monotonic() - started
+            if elapsed >= LIMBO_CRASH_SECONDS:
+                break
+            value = limbo_crash_at(elapsed / LIMBO_CRASH_SECONDS, crash)
+            if value != last:
+                panel = self._embeds.limbo_table(
+                    game, crash_value=value, reveal=False, balance_text=climbing
+                )
+                await self._edit_limbo_frame(game, panel, interaction=interaction)
+                last = value
+            remaining = LIMBO_CRASH_SECONDS - (time.monotonic() - started)
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(LIMBO_CRASH_STEP, remaining))
+        leftover = LIMBO_CRASH_SECONDS - (time.monotonic() - started)
+        if leftover > 0:
+            await asyncio.sleep(leftover)
+        settled = await self._embeds.user_balance_line(game)
+        panel = self._embeds.limbo_table(
+            game, crash_value=crash, reveal=True, balance_text=settled
+        )
+        if not await self._edit_limbo_frame(game, panel, interaction=interaction, retry=True):
+            await self._edit_listing(game, panel, interaction=interaction)
+
+    async def _animate_target_draw(self, game: GameRecord) -> None:
+        target = game.target_number
+        if target is None:
+            await self._edit_ref(game.channel_id, game.message_id, self._embeds.target_table(game))
+            return
+        frames = target_draw_frames(target)
+        delay = target_draw_interval(len(frames))
+        for index, value in enumerate(frames):
+            reveal = index == len(frames) - 1
+            panel = self._embeds.target_table(game, draw_number=value, reveal=reveal)
+            await self._edit_ref(game.channel_id, game.message_id, panel, retry=True)
+            if not reveal and delay:
+                await asyncio.sleep(delay)
+
     async def on_resolved(
         self,
         game: GameRecord,
         *,
         interaction: discord.Interaction | None = None,
     ) -> None:
+        if game.is_blackjack():
+            await self._edit_listing(
+                game, await self._embeds.blackjack_panel(game), interaction=interaction
+            )
+            await self._post_outcomes(game)
+            await self._refresh_provably_fair(game)
+            if self._admin_alerts is not None:
+                await self._admin_alerts.on_game_resolved(game)
+            return
+        if game.is_limbo():
+            async with self._dice_lock(game.game_id):
+                await self._animate_limbo_crash(game, interaction=interaction)
+            await self._post_outcomes(game)
+            await self._refresh_provably_fair(game)
+            if self._admin_alerts is not None:
+                await self._admin_alerts.on_game_resolved(game)
+            return
+        if game.is_target():
+            async with self._dice_lock(game.game_id):
+                await self._animate_target_draw(game)
+            await self._post_outcomes(game)
+            await self._refresh_provably_fair(game)
+            if self._admin_alerts is not None:
+                await self._admin_alerts.on_game_resolved(game)
+            asyncio.create_task(self._delete_listing_later(game, delay=4))
+            return
         if self._is_inline(game):
             if game.is_dice():
                 await self._edit_listing(
@@ -451,6 +732,9 @@ class GameTablePresenter:
         *,
         interaction: discord.Interaction | None = None,
     ) -> None:
+        if game.is_target():
+            await self._edit_ref(game.channel_id, game.message_id, self._embeds.target_table(game))
+            return
         if self._is_inline(game):
             await self._edit_listing(game, await self._lobby_panel(game), interaction=interaction)
             return
@@ -540,6 +824,28 @@ class GameTablePresenter:
                 return settled
         return settled
 
+    async def _edit_limbo_frame(
+        self,
+        game: GameRecord,
+        panel: CasinoPanel,
+        *,
+        interaction: discord.Interaction | None = None,
+        retry: bool = False,
+    ) -> bool:
+        if game.channel_id and game.message_id:
+            if await self._edit_ref(
+                game.channel_id,
+                game.message_id,
+                panel,
+                retry=retry,
+                quiet=not retry,
+            ):
+                return True
+        if await self._edit_from_interaction(interaction, panel):
+            return True
+        panel.stop()
+        return False
+
     async def _edit_listing(
         self,
         game: GameRecord,
@@ -560,6 +866,8 @@ class GameTablePresenter:
         panel: CasinoPanel,
     ) -> bool:
         if interaction is None:
+            return False
+        if getattr(interaction, "type", None) is discord.InteractionType.modal_submit:
             return False
         kwargs = panel.edit_kwargs()
         try:
@@ -617,6 +925,13 @@ class GameTablePresenter:
                 return
         self._logger.warning("listing_delete_missed", gameId=game.game_id, messageId=message_id)
 
+    async def _delete_listing_later(self, game: GameRecord, *, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            await self._delete_listing(game)
+        except Exception:
+            self._logger.exception("listing_delayed_delete_failed", gameId=game.game_id)
+
     async def _delete_message(self, channel_id: str, message_id: str) -> bool:
         channel = await self._messageable(channel_id)
         if channel is None or not hasattr(channel, "get_partial_message"):
@@ -656,17 +971,30 @@ class GameTablePresenter:
         channel_id: str | None,
         message_id: str | None,
         panel: CasinoPanel,
+        *,
+        retry: bool = False,
+        quiet: bool = False,
     ) -> bool:
         message = await self._fetch_message(channel_id, message_id)
         if message is None:
             return False
-        try:
-            await message.edit(**panel.edit_kwargs())
-            panel.stop()
-            return True
-        except discord.HTTPException:
-            self._logger.exception("game_message_edit_failed", channelId=channel_id, messageId=message_id)
-            return False
+        attempts = 3 if retry else 1
+        for attempt in range(attempts):
+            try:
+                await message.edit(**panel.edit_kwargs())
+                panel.stop()
+                return True
+            except discord.HTTPException as exc:
+                retry_after = getattr(exc, "retry_after", None)
+                if retry and attempt + 1 < attempts and (exc.status == 429 or retry_after):
+                    await asyncio.sleep(float(retry_after or 0.4))
+                    continue
+                if quiet and (exc.status == 429 or retry_after):
+                    panel.stop()
+                    return False
+                self._logger.exception("game_message_edit_failed", channelId=channel_id, messageId=message_id)
+                return False
+        return False
 
     async def _send_to(self, channel_id: str | None, panel: CasinoPanel) -> discord.Message | None:
         channel = await self._messageable(channel_id)

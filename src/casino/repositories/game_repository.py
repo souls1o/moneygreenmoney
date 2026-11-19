@@ -236,6 +236,7 @@ class GameRepository(MongoRepository):
                     "readyIds": player_id,
                     "houseSeatIds": player_id,
                 },
+                "$unset": {f"targetPicks.{player_id}": ""},
                 "$inc": {"version": 1},
             },
             return_document=ReturnDocument.AFTER,

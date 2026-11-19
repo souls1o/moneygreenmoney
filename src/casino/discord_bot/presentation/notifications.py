@@ -5,6 +5,7 @@ import discord
 from casino.container import AppContainer
 from casino.discord_bot.presentation.embeds import EmbedFactory
 from casino.domain.records import GameRecord, is_house_seat
+from casino.utils.money import SolAmount
 from casino.logging.logger import get_logger
 
 
@@ -25,6 +26,18 @@ class GameNotificationPresenter:
             return
         for player_id in recipients:
             await self._dm(player_id, self._embeds.player_joined(game, joiner_id), game.game_id)
+
+    async def tip_received(
+        self,
+        recipient_id: str,
+        sender_id: str,
+        amount: SolAmount,
+        *,
+        fiat,
+        currency: str,
+    ) -> None:
+        panel = self._embeds.tip_received(sender_id, amount, fiat=fiat, currency=currency)
+        await self._dm(recipient_id, panel, sender_id)
 
     async def _dm(self, user_id: str, panel, game_id: str) -> None:
         try:

@@ -2,11 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from casino.domain.blackjack import BlackjackAction
+
 
 @dataclass(frozen=True, slots=True)
 class HistoryTarget:
     user_id: str
     page: int
+
+
+@dataclass(frozen=True, slots=True)
+class BlackjackTarget:
+    game_id: str
+    action: BlackjackAction
 
 
 class ComponentIdCodec:
@@ -29,6 +37,18 @@ class ComponentIdCodec:
     RAIN_JOIN = "rain:join:"
     VERIFY_START = "verify:start"
     VERIFY_ENTER = "verify:enter"
+    BJ_HIT = "bj:hit:"
+    BJ_STAND = "bj:stand:"
+    BJ_SPLIT = "bj:split:"
+    BJ_DOUBLE = "bj:double:"
+    BJ_NEW = "bj:new:"
+    BJ_BET = "bj:bet:"
+    LB_NEW = "lb:new:"
+    LB_BET = "lb:bet:"
+    TARGET_LOCK = "tg:lock:"
+    TICKET_TOPIC = "ticket:topic"
+    TICKET_CLOSE = "ticket:close:"
+    JP_JOIN = "jp:join:"
 
     def join(self, game_id: str) -> str:
         return f"{self.JOIN}{game_id}"
@@ -69,6 +89,45 @@ class ComponentIdCodec:
     def history(self, user_id: str, page: int) -> str:
         return f"{self.HISTORY}{user_id}:{page}"
 
+    def blackjack_hit(self, game_id: str) -> str:
+        return f"{self.BJ_HIT}{game_id}"
+
+    def blackjack_stand(self, game_id: str) -> str:
+        return f"{self.BJ_STAND}{game_id}"
+
+    def blackjack_split(self, game_id: str) -> str:
+        return f"{self.BJ_SPLIT}{game_id}"
+
+    def blackjack_double(self, game_id: str) -> str:
+        return f"{self.BJ_DOUBLE}{game_id}"
+
+    def blackjack_new(self, game_id: str) -> str:
+        return f"{self.BJ_NEW}{game_id}"
+
+    def blackjack_bet(self, game_id: str) -> str:
+        return f"{self.BJ_BET}{game_id}"
+
+    def parse_blackjack_new(self, custom_id: str) -> str | None:
+        return custom_id[len(self.BJ_NEW) :] if custom_id.startswith(self.BJ_NEW) else None
+
+    def parse_blackjack_bet(self, custom_id: str) -> str | None:
+        return custom_id[len(self.BJ_BET) :] if custom_id.startswith(self.BJ_BET) else None
+
+    def limbo_new(self, game_id: str) -> str:
+        return f"{self.LB_NEW}{game_id}"
+
+    def limbo_bet(self, game_id: str) -> str:
+        return f"{self.LB_BET}{game_id}"
+
+    def parse_limbo_new(self, custom_id: str) -> str | None:
+        return custom_id[len(self.LB_NEW) :] if custom_id.startswith(self.LB_NEW) else None
+
+    def parse_limbo_bet(self, custom_id: str) -> str | None:
+        return custom_id[len(self.LB_BET) :] if custom_id.startswith(self.LB_BET) else None
+
+    def target_lock(self, game_id: str) -> str:
+        return f"{self.TARGET_LOCK}{game_id}"
+
     def parse_join(self, custom_id: str) -> str | None:
         return custom_id[len(self.JOIN) :] if custom_id.startswith(self.JOIN) else None
 
@@ -104,6 +163,35 @@ class ComponentIdCodec:
 
     def parse_rain_join(self, custom_id: str) -> str | None:
         return custom_id[len(self.RAIN_JOIN) :] if custom_id.startswith(self.RAIN_JOIN) else None
+
+    def jackpot_join(self, jackpot_id: str) -> str:
+        return f"{self.JP_JOIN}{jackpot_id}"
+
+    def parse_jackpot_join(self, custom_id: str) -> str | None:
+        return custom_id[len(self.JP_JOIN) :] if custom_id.startswith(self.JP_JOIN) else None
+
+    def parse_target_lock(self, custom_id: str) -> str | None:
+        return custom_id[len(self.TARGET_LOCK) :] if custom_id.startswith(self.TARGET_LOCK) else None
+
+    def parse_blackjack(self, custom_id: str) -> BlackjackTarget | None:
+        mapping = (
+            (self.BJ_HIT, BlackjackAction.HIT),
+            (self.BJ_STAND, BlackjackAction.STAND),
+            (self.BJ_SPLIT, BlackjackAction.SPLIT),
+            (self.BJ_DOUBLE, BlackjackAction.DOUBLE),
+        )
+        for prefix, action in mapping:
+            if custom_id.startswith(prefix):
+                game_id = custom_id[len(prefix) :]
+                if game_id:
+                    return BlackjackTarget(game_id=game_id, action=action)
+        return None
+
+    def ticket_close(self, ticket_id: str) -> str:
+        return f"{self.TICKET_CLOSE}{ticket_id}"
+
+    def parse_ticket_close(self, custom_id: str) -> str | None:
+        return custom_id[len(self.TICKET_CLOSE) :] if custom_id.startswith(self.TICKET_CLOSE) else None
 
     def parse_history(self, custom_id: str) -> HistoryTarget | None:
         if not custom_id.startswith(self.HISTORY):

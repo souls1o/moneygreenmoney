@@ -11,6 +11,7 @@ from casino.repositories.house_repository import HouseRepository
 from casino.repositories.transaction_repository import TransactionRepository
 from casino.services.balance_service import BalanceService
 from casino.services.game_service import GameService
+from casino.services.investor_service import InvestorService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.solana_client.addresses import SolanaAddressValidator
@@ -37,6 +38,7 @@ class AdminService:
         rpc: SolanaRpcGateway,
         address_validator: SolanaAddressValidator,
         transactions: TransactionRepository,
+        investors: InvestorService | None = None,
     ) -> None:
         self._users = user_service
         self._balances = balance_service
@@ -47,6 +49,7 @@ class AdminService:
         self._rpc = rpc
         self._addresses = address_validator
         self._transactions = transactions
+        self._investors = investors
         self._logger = get_logger("casino.admin")
 
     async def adjust(
@@ -109,6 +112,7 @@ class AdminService:
         quote = await self._prices.get_quote(allow_stale=True)
         usd_price = quote.sol_price("USD")
         async with self._uow.begin() as uow:
+            before = await self._house.get(session=uow.session)
             treasury, _entry = await self._balances.credit_house_reserve(
                 amount=amount,
                 entry_type=LedgerEntryType.ADJUSTMENT,
@@ -117,6 +121,10 @@ class AdminService:
                 description=f"Admin house funding by {actor_id}",
                 session=uow.session,
             )
+            if self._investors is not None:
+                treasury = await self._investors.on_founder_inflow(
+                    amount, book_before=before.sol_balance_lamports, session=uow.session
+                )
         self._logger.info(
             "house_funded",
             actorId=actor_id,
@@ -152,8 +160,13 @@ class AdminService:
 
         quote = await self._prices.get_quote(allow_stale=True)
         usd_price = quote.sol_price("USD")
+        founder_shares_burned = 0
         try:
             async with self._uow.begin() as uow:
+                if self._investors is not None:
+                    founder_shares_burned = await self._investors.founder_outflow_shares(
+                        amount, session=uow.session
+                    )
                 _treasury, entry = await self._balances.debit_house_reserve(
                     amount=amount,
                     price_usd=usd_price,
@@ -162,6 +175,10 @@ class AdminService:
                     transaction_type=TransactionType.WITHDRAWAL,
                     session=uow.session,
                 )
+                if self._investors is not None and founder_shares_burned:
+                    await self._investors.apply_founder_share_delta(
+                        -founder_shares_burned, session=uow.session
+                    )
         except InsufficientHouseReserveError as exc:
             raise WithdrawalError("The house book does not have enough SOL for this withdrawal.") from exc
 
@@ -175,7 +192,7 @@ class AdminService:
                 actorId=actor_id,
                 error=str(exc),
             )
-            await self._refund_house(amount, usd_price, wallet, actor_id)
+            await self._refund_house(amount, usd_price, wallet, actor_id, founder_shares_burned)
             raise WithdrawalError(_house_send_error(exc)) from exc
 
         if entry.related_tx_id:
@@ -193,7 +210,14 @@ class AdminService:
         )
         return HouseWithdrawalResult(amount=amount, destination=wallet, signature=signature)
 
-    async def _refund_house(self, amount: SolAmount, usd_price, wallet: str, actor_id: str) -> None:
+    async def _refund_house(
+        self,
+        amount: SolAmount,
+        usd_price,
+        wallet: str,
+        actor_id: str,
+        founder_shares_burned: int = 0,
+    ) -> None:
         try:
             async with self._uow.begin() as uow:
                 await self._balances.credit_house_reserve(
@@ -204,6 +228,10 @@ class AdminService:
                     description=f"Refund failed house withdrawal by {actor_id} to {wallet}",
                     session=uow.session,
                 )
+                if self._investors is not None and founder_shares_burned:
+                    await self._investors.apply_founder_share_delta(
+                        founder_shares_burned, session=uow.session
+                    )
         except Exception:
             self._logger.exception(
                 "house_withdrawal_refund_failed",

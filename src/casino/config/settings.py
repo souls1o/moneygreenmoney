@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     house_fee_bps: int = Field(default=300, ge=0, le=10_000)
     min_bet_usd: str = "0.01"
     min_rain_usd: str = "50"
+    min_invest_usd: str = "1"
+    max_invest_usd: str = "100000"
     min_rain_seconds: int = Field(default=10, ge=1)
     max_rain_seconds: int = Field(default=604_800, ge=10)
     max_call_bot_usd: str = "1000"
@@ -43,7 +45,9 @@ class Settings(BaseSettings):
     game_ttl_seconds: int = Field(default=300, ge=30)
     auto_flip_after_seconds: int = Field(default=3600, ge=30)
     table_idle_delete_seconds: int = Field(default=300, ge=30)
-    deposit_poll_interval_seconds: int = Field(default=15, ge=5)
+    deposit_poll_interval_seconds: int = Field(default=30, ge=10)
+    deposit_wallets_per_tick: int = Field(default=4, ge=1, le=20)
+    deposit_rpc_gap_seconds: float = Field(default=0.12, ge=0, le=2)
     expiry_poll_interval_seconds: int = Field(default=20, ge=5)
     rate_limit_commands_per_window: int = Field(default=8, ge=1)
     rate_limit_window_seconds: int = Field(default=10, ge=1)

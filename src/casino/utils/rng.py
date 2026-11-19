@@ -6,7 +6,9 @@ import secrets
 from dataclasses import dataclass
 from decimal import Decimal
 
+from casino.domain.blackjack import BLACKJACK_SHOE_SIZE, BlackjackCard, card_from_index
 from casino.domain.enums import CoinSide
+from casino.domain.limbo import crash_from_digest
 
 _ROLL_DENOMINATOR = Decimal(0x1_0000_0000)
 _ROLL_RANGE = Decimal(100)
@@ -16,6 +18,13 @@ _ROLL_RANGE = Decimal(100)
 class FairCommitment:
     server_seed: str
     server_seed_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class FairCard:
+    digest: str
+    card: BlackjackCard
+    card_index: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,9 +40,29 @@ class FairDice:
 
 
 @dataclass(frozen=True, slots=True)
+class FairJackpot:
+    digest: str
+    ticket: int
+    winner_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class FairRainSplit:
     digest: str
     shares: dict[str, int]
+
+
+@dataclass(frozen=True, slots=True)
+class FairLimbo:
+    digest: str
+    crash: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class FairTarget:
+    digest: str
+    value: int
+    index: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +124,38 @@ class ProvablyFairService:
             side=CoinSide.HEADS if roll < 50 else CoinSide.TAILS,
         )
 
+    def resolve_card(self, server_seed: str, client_seed: str, nonce: int, card_index: int) -> FairCard:
+        remaining = [index % 52 for index in range(BLACKJACK_SHOE_SIZE)]
+        digest = ""
+        chosen = 0
+        draws = min(max(int(card_index), 0) + 1, len(remaining))
+        for draw in range(draws):
+            digest = hmac.new(
+                server_seed.encode("utf-8"),
+                f"{client_seed}:{nonce}:shoe:{draw}".encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            pick = int(digest[:8], 16) % len(remaining)
+            chosen = remaining.pop(pick)
+        return FairCard(digest=digest, card=card_from_index(chosen), card_index=card_index)
+
+    def resolve_target(self, server_seed: str, client_seed: str, nonce: int, index: int = 0) -> FairTarget:
+        digest = hmac.new(
+            server_seed.encode("utf-8"),
+            f"{client_seed}:{nonce}:target:{index}".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        raw = int(digest[:8], 16)
+        return FairTarget(digest=digest, value=raw % 999 + 1, index=index)
+
+    def resolve_limbo(self, server_seed: str, client_seed: str, nonce: int) -> FairLimbo:
+        digest = hmac.new(
+            server_seed.encode("utf-8"),
+            f"{client_seed}:{nonce}:limbo".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return FairLimbo(digest=digest, crash=crash_from_digest(digest))
+
     def resolve_dice(self, server_seed: str, client_seed: str, nonce: int, roll_index: int) -> FairDice:
         digest = hmac.new(
             server_seed.encode("utf-8"),
@@ -109,6 +170,25 @@ class ProvablyFairService:
             die_b=die_b,
             roll_index=roll_index,
         )
+
+    def resolve_jackpot(
+        self,
+        server_seed: str,
+        client_seed: str,
+        nonce: int,
+        entries: dict[str, int],
+    ) -> FairJackpot:
+        from casino.domain.jackpot import pick_weighted_winner
+
+        digest = hmac.new(
+            server_seed.encode("utf-8"),
+            f"{client_seed}:{nonce}:jackpot".encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        total = sum(max(int(value), 0) for value in entries.values())
+        ticket = int(digest[:16], 16) % total if total else 0
+        winner_id = pick_weighted_winner(entries, ticket) if total else ""
+        return FairJackpot(digest=digest, ticket=ticket, winner_id=winner_id)
 
     def resolve_rain(
         self,

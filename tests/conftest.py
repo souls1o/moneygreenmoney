@@ -65,6 +65,8 @@ class StubSettings:
     min_bet_usd = "0.01"
     max_call_bot_usd = "1000"
     min_rain_usd = "50"
+    min_invest_usd = "1"
+    max_invest_usd = "100000"
 
     @property
     def house_fee_rate_display(self) -> str:
@@ -84,10 +86,16 @@ class FixedRandomService:
         side,
         dice_pairs: list[tuple[int, int]] | None = None,
         coin_sides: list | None = None,
+        cards: list | None = None,
+        targets: list[int] | None = None,
+        limbos: list | None = None,
     ) -> None:
         self._side = side
         self._dice_pairs = dice_pairs
         self._coin_sides = coin_sides
+        self._cards = cards
+        self._targets = targets
+        self._limbos = limbos
 
     def commit(self) -> FairCommitment:
         return FairCommitment(server_seed="fixed-server-seed", server_seed_hash="fixed-hash")
@@ -99,6 +107,31 @@ class FixedRandomService:
         if self._coin_sides:
             return self._coin_sides[flip_index % len(self._coin_sides)]
         return self._side
+
+    def resolve_card(self, server_seed: str, client_seed: str, nonce: int, card_index: int):
+        from casino.domain.blackjack import BlackjackCard
+        from casino.utils.rng import FairCard
+
+        cards = self._cards or [
+            BlackjackCard(rank=9, suit=0),
+            BlackjackCard(rank=5, suit=1),
+            BlackjackCard(rank=8, suit=2),
+            BlackjackCard(rank=4, suit=3),
+        ]
+        return FairCard(digest="fixed-card", card=cards[card_index % len(cards)], card_index=card_index)
+
+    def resolve_target(self, server_seed: str, client_seed: str, nonce: int, index: int = 0):
+        from casino.utils.rng import FairTarget
+
+        values = self._targets or [500, 250]
+        return FairTarget(digest="fixed-target", value=values[index % len(values)], index=index)
+
+    def resolve_limbo(self, server_seed: str, client_seed: str, nonce: int):
+        from casino.utils.rng import FairLimbo
+
+        values = self._limbos or [Decimal("2.00")]
+        crash = values[0] if values else Decimal("2.00")
+        return FairLimbo(digest="fixed-limbo", crash=Decimal(str(crash)))
 
     def resolve_dice(self, server_seed: str, client_seed: str, nonce: int, roll_index: int):
         from casino.utils.rng import FairDice

@@ -10,10 +10,16 @@ from casino.discord_bot.presentation.errors import DiscordErrorPresenter
 from casino.discord_bot.presentation.ids import ComponentIdCodec
 from casino.discord_bot.presentation.modals import (
     ProvablyFairCheckModal,
+    BlackjackBetModal,
+    JackpotJoinModal,
+    LimboBetModal,
+    TargetPickModal,
+    TicketCloseModal,
+    TicketCreateModal,
     VerifyCodeModal,
     WithdrawModal,
 )
-from casino.domain.enums import CoinSide, GameStatus
+from casino.domain.enums import CoinSide, GameStatus, TicketCategory
 from casino.errors import AppError
 from casino.logging.logger import LogContext, get_logger
 
@@ -36,7 +42,9 @@ class ComponentRouterCog(commands.Cog):
         custom_id = str((interaction.data or {}).get("custom_id") or "")
         if not custom_id:
             return
-        handled = custom_id.startswith(("cf:", "bal:", "profile:", "settings:", "pf:", "rain:", "verify:"))
+        handled = custom_id.startswith(
+            ("cf:", "bal:", "profile:", "settings:", "pf:", "rain:", "verify:", "bj:", "lb:", "tg:", "ticket:", "jp:")
+        )
         if not handled:
             return
         try:
@@ -78,10 +86,36 @@ class ComponentRouterCog(commands.Cog):
                 await self._on_decline_rematch(interaction, game_id)
             elif (game_id := self._ids.parse_cancel(custom_id)):
                 await self._on_cancel(interaction, game_id)
+            elif (game_id := self._ids.parse_target_lock(custom_id)):
+                await interaction.response.send_modal(
+                    TargetPickModal(self._container, self._embeds, self._errors, game_id)
+                )
+            elif (game_id := self._ids.parse_blackjack_new(custom_id)):
+                await self._on_blackjack_new(interaction, game_id)
+            elif (game_id := self._ids.parse_blackjack_bet(custom_id)):
+                await interaction.response.send_modal(
+                    BlackjackBetModal(self._container, self._embeds, self._errors, game_id)
+                )
+            elif (game_id := self._ids.parse_limbo_new(custom_id)):
+                await self._on_limbo_new(interaction, game_id)
+            elif (game_id := self._ids.parse_limbo_bet(custom_id)):
+                await interaction.response.send_modal(
+                    LimboBetModal(self._container, self._embeds, self._errors, game_id)
+                )
+            elif (target := self._ids.parse_blackjack(custom_id)):
+                await self._on_blackjack(interaction, target.game_id, target.action)
             elif (rain_id := self._ids.parse_rain_join(custom_id)):
                 await self._on_rain_join(interaction, rain_id)
+            elif (jackpot_id := self._ids.parse_jackpot_join(custom_id)):
+                await self._on_jackpot_join(interaction, jackpot_id)
             elif (target := self._ids.parse_history(custom_id)):
                 await self._on_history(interaction, target.user_id, target.page)
+            elif custom_id == self._ids.TICKET_TOPIC:
+                await self._on_ticket_topic(interaction)
+            elif (ticket_id := self._ids.parse_ticket_close(custom_id)):
+                await interaction.response.send_modal(
+                    TicketCloseModal(self._container, self._embeds, self._errors, ticket_id)
+                )
         except AppError as exc:
             self._logger.info("component_rejected", customId=custom_id, code=exc.code)
             await self._send_panel(interaction, self._errors.panel_for(exc), ephemeral=True)
@@ -290,6 +324,43 @@ class ComponentRouterCog(commands.Cog):
         await self._send_panel(interaction, self._embeds.cancelled_game(game), ephemeral=True)
         await self._tables().on_cancelled(game, interaction=interaction)
 
+    async def _on_blackjack(self, interaction: discord.Interaction, game_id: str, action) -> None:
+        with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
+            await self._tables().handle_blackjack_action(
+                game_id, str(interaction.user.id), action, interaction=interaction
+            )
+
+    async def _on_blackjack_new(self, interaction: discord.Interaction, game_id: str) -> None:
+        with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
+            await self._tables().handle_blackjack_redeal(
+                game_id, str(interaction.user.id), interaction=interaction
+            )
+
+    async def _on_limbo_new(self, interaction: discord.Interaction, game_id: str) -> None:
+        with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
+            await self._tables().handle_limbo_redeal(
+                game_id, str(interaction.user.id), interaction=interaction
+            )
+
+    async def _on_jackpot_join(self, interaction: discord.Interaction, jackpot_id: str) -> None:
+        from casino.domain.jackpot import max_join_lamports
+        from casino.utils.money import SolAmount
+
+        jackpot = await self._container.jackpots.get(jackpot_id)
+        hint = "Any amount of your balance"
+        opener = jackpot.opener_lamports()
+        if opener is not None:
+            cap = SolAmount.from_lamports(max_join_lamports(opener))
+            quote = self._container.price.peek_cache()
+            if quote is None:
+                hint = f"Max {self._container.math.format_sol(cap)} SOL"
+            else:
+                usd = self._container.math.sol_to_fiat(cap, quote.sol_price("USD"))
+                hint = f"Max {self._container.math.format_fiat_symbol(usd, 'USD')}"
+        await interaction.response.send_modal(
+            JackpotJoinModal(self._container, self._embeds, self._errors, jackpot_id, hint=hint)
+        )
+
     async def _on_rain_join(self, interaction: discord.Interaction, rain_id: str) -> None:
         await interaction.response.defer(ephemeral=True)
         with LogContext.bind(userId=str(interaction.user.id), rainId=rain_id):
@@ -298,7 +369,7 @@ class ComponentRouterCog(commands.Cog):
             await interaction.followup.send(
                 **self._embeds.success(
                     "Joined the rain",
-                    "You will receive an equal share when the timer ends.",
+                    "You will be notified with your share when the timer ends.",
                 ).send_kwargs(ephemeral=True)
             )
 
@@ -324,3 +395,28 @@ class ComponentRouterCog(commands.Cog):
         if not isinstance(self.bot, CasinoBot):
             raise RuntimeError("Casino bot is not ready.")
         return self.bot.rains
+
+    def _tickets(self):
+        from casino.discord_bot.bot import CasinoBot
+
+        if not isinstance(self.bot, CasinoBot):
+            raise RuntimeError("Casino bot is not ready.")
+        return self.bot.tickets
+
+    async def _on_ticket_topic(self, interaction: discord.Interaction) -> None:
+        values = (interaction.data or {}).get("values") or []
+        if not values:
+            await interaction.response.send_message(
+                **self._embeds.error("Choose a topic.").send_kwargs(ephemeral=True)
+            )
+            return
+        try:
+            category = TicketCategory(str(values[0]))
+        except ValueError:
+            await interaction.response.send_message(
+                **self._embeds.error("That topic is not available.").send_kwargs(ephemeral=True)
+            )
+            return
+        await interaction.response.send_modal(
+            TicketCreateModal(self._container, self._embeds, self._errors, category)
+        )

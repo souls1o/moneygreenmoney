@@ -297,3 +297,46 @@ class UserRepository(MongoRepository):
             session=session,
         )
         return self._mapper.user_from_document(document) if document else None
+
+    async def add_investor_shares(
+        self,
+        discord_id: str,
+        shares: int,
+        now: datetime,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> UserRecord:
+        document = await self.collection.find_one_and_update(
+            {"discordId": discord_id},
+            {
+                "$inc": {"investorShares": shares, "version": 1},
+                "$set": {"updatedAt": now},
+            },
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        if document is None:
+            raise NotFoundError("User was not found.")
+        return self._mapper.user_from_document(document)
+
+    async def remove_investor_shares(
+        self,
+        discord_id: str,
+        shares: int,
+        now: datetime,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> UserRecord:
+        document = await self.collection.find_one_and_update(
+            {"discordId": discord_id, "investorShares": {"$gte": shares}},
+            {
+                "$inc": {"investorShares": -shares, "version": 1},
+                "$set": {"updatedAt": now},
+            },
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        if document is None:
+            existing = await self.find_by_discord_id(discord_id, session=session)
+            if existing is None:
+                raise NotFoundError("User was not found.")
+            raise InsufficientBalanceError("You do not have that many house shares to withdraw.")
+        return self._mapper.user_from_document(document)

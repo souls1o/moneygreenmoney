@@ -4,13 +4,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
+from casino.domain.blackjack import BlackjackAction, BlackjackCard, BlackjackHand, legal_actions
 from casino.domain.enums import (
     CoinSide,
     GameMode,
     GameStatus,
     GameType,
+    JackpotStatus,
     LedgerEntryType,
     RainStatus,
+    TicketCategory,
+    TicketStatus,
     TransactionStatus,
     TransactionType,
     UserRole,
@@ -79,6 +83,7 @@ class UserRecord:
     referred_wagered_lamports: int = 0
     affiliate_earned_lamports: int = 0
     affiliate_earned_usd: Decimal = Decimal("0")
+    investor_shares: int = 0
     version: int = 0
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -156,6 +161,15 @@ class GameRecord:
     current_round_rolls: list[DiceRollRecord] = field(default_factory=list)
     dice_rolls: list[DiceRollRecord] = field(default_factory=list)
     dice_rolling_ids: list[str] = field(default_factory=list)
+    blackjack_player_hands: list[BlackjackHand] = field(default_factory=list)
+    blackjack_dealer_cards: list[BlackjackCard] = field(default_factory=list)
+    blackjack_hole_hidden: bool = True
+    blackjack_hand_index: int = 0
+    blackjack_card_index: int = 0
+    target_picks: dict[str, int] = field(default_factory=dict)
+    target_number: int | None = None
+    limbo_target: Decimal | None = None
+    limbo_result: Decimal | None = None
 
     @property
     def bet_amount(self) -> SolAmount:
@@ -182,8 +196,34 @@ class GameRecord:
     def is_dice(self) -> bool:
         return self.game_type is GameType.DICE
 
+    def is_blackjack(self) -> bool:
+        return self.game_type is GameType.BLACKJACK
+
+    def is_target(self) -> bool:
+        return self.game_type is GameType.TARGET
+
+    def is_limbo(self) -> bool:
+        return self.game_type is GameType.LIMBO
+
+    def current_blackjack_hand(self) -> BlackjackHand | None:
+        if not self.blackjack_player_hands:
+            return None
+        index = min(max(self.blackjack_hand_index, 0), len(self.blackjack_player_hands) - 1)
+        return self.blackjack_player_hands[index]
+
+    def blackjack_legal_actions(self) -> frozenset[BlackjackAction]:
+        if self.status is not GameStatus.ACTIVE or not self.is_blackjack():
+            return frozenset()
+        return legal_actions(self.blackjack_player_hands, self.blackjack_hand_index)
+
     def is_awaiting_settlement(self) -> bool:
-        return not self.is_dice() and self.status is GameStatus.ACTIVE
+        return (
+            not self.is_dice()
+            and not self.is_blackjack()
+            and not self.is_target()
+            and not self.is_limbo()
+            and self.status is GameStatus.ACTIVE
+        )
 
     def is_dice_team(self) -> bool:
         return self.is_dice() and self.mode is GameMode.TEAM
@@ -191,23 +231,28 @@ class GameRecord:
     def is_dice_ffa(self) -> bool:
         return self.is_dice() and self.mode is not GameMode.TEAM
 
+    def is_open_ffa(self) -> bool:
+        return self.mode is not GameMode.TEAM and (self.is_dice() or self.is_target())
+
     def seat_capacity(self) -> int:
-        if self.is_dice_ffa():
+        if self.is_open_ffa():
             return max(int(self.max_players), 2)
         if self.is_dice_team():
             return 4
         return self.seats_per_side()
 
     def join_side_capacity(self) -> int:
-        if self.is_dice_ffa():
+        if self.is_open_ffa():
             return self.seat_capacity()
         return self.seats_per_side()
 
     def matchup_label(self) -> str:
         if self.mode is GameMode.TEAM:
             return "2v2"
-        if self.is_dice():
+        if self.is_open_ffa():
             return "v".join(["1"] * self.seat_capacity())
+        if self.is_blackjack() or self.is_limbo():
+            return "vs House"
         return "1v1"
 
     def side_of(self, player_id: str) -> CoinSide | None:
@@ -298,7 +343,7 @@ class GameRecord:
         return HOUSE_USER_ID if count == 0 else f"{HOUSE_USER_ID}:{count + 1}"
 
     def next_vacant_side(self) -> CoinSide | None:
-        if self.is_dice_ffa():
+        if self.is_open_ffa():
             return None if self.is_full() else CoinSide.HEADS
         if self.vacant_on(CoinSide.HEADS):
             return CoinSide.HEADS
@@ -310,13 +355,13 @@ class GameRecord:
         return player_id in self.heads_ids or player_id in self.tails_ids
 
     def is_full(self) -> bool:
-        if self.is_dice_ffa():
+        if self.is_open_ffa():
             return len(self.player_ids()) >= self.seat_capacity()
         seats = self.seats_per_side()
         return len(self.heads_ids) >= seats and len(self.tails_ids) >= seats
 
     def vacant_on(self, side: CoinSide) -> bool:
-        if self.is_dice_ffa():
+        if self.is_open_ffa():
             return side is CoinSide.HEADS and len(self.heads_ids) < self.seat_capacity()
         return len(self.ids_for(side)) < self.seats_per_side()
 
@@ -328,7 +373,7 @@ class GameRecord:
             return False
         if self.is_full():
             return False
-        if not self.is_dice_ffa() and self.next_vacant_side() is None:
+        if not self.is_open_ffa() and self.next_vacant_side() is None:
             return False
         return seat_usd * Decimal(self.house_seat_count() + 1) <= max_house_usd
 
@@ -357,6 +402,8 @@ class GameRecord:
 
     def player_profit_fiat(self, player_id: str) -> Decimal:
         stake = self.stake_usd()
+        if not self.winner_ids:
+            return Decimal("0")
         if not self.player_won(player_id):
             return -stake
         winners = max(len(self.winner_ids), 1)
@@ -369,6 +416,8 @@ class GameRecord:
 
     def player_profit_lamports(self, player_id: str) -> int:
         stake = self.wager_for(player_id).lamports
+        if not self.winner_ids:
+            return 0
         if not self.player_won(player_id):
             return -stake
         if is_house_seat(player_id):
@@ -383,7 +432,17 @@ class GameRecord:
         return bool(humans) and humans <= set(self.ready_ids)
 
     def can_start(self) -> bool:
+        if self.is_target() or self.is_limbo():
+            return False
         return self.is_full() and self.all_humans_ready() and not self.is_awaiting_rematch_accepts()
+
+    def has_target_pick(self, player_id: str) -> bool:
+        return player_id in self.target_picks
+
+    def target_ready_to_resolve(self) -> bool:
+        if not self.is_target() or not self.is_full():
+            return False
+        return all(player_id in self.target_picks for player_id in self.player_ids())
 
     def is_awaiting_rematch_accepts(self) -> bool:
         return bool(self.rematch_of_game_id) and any(not self.has_player(player_id) for player_id in self.invited_ids)
@@ -396,10 +455,14 @@ class GuildConfigRecord:
     coinflip_category_id: str | None = None
     dice_outcomes_channel_id: str | None = None
     dice_category_id: str | None = None
+    blackjack_outcomes_channel_id: str | None = None
+    target_outcomes_channel_id: str | None = None
     provably_fair_channel_id: str | None = None
     open_games_channel_id: str | None = None
     open_coinflip_channel_id: str | None = None
     open_dice_channel_id: str | None = None
+    open_blackjack_channel_id: str | None = None
+    open_target_channel_id: str | None = None
     deposit_alerts_channel_id: str | None = None
     withdrawal_alerts_channel_id: str | None = None
     house_ledger_channel_id: str | None = None
@@ -407,19 +470,40 @@ class GuildConfigRecord:
     rain_ping_role_id: str | None = None
     verify_channel_id: str | None = None
     member_role_id: str | None = None
+    investor_role_id: str | None = None
+    support_channel_id: str | None = None
+    support_category_id: str | None = None
+    support_role_id: str | None = None
+    support_logs_channel_id: str | None = None
+    support_message_id: str | None = None
     provably_fair_message_id: str | None = None
     verify_message_id: str | None = None
+    jackpot_channel_id: str | None = None
+    jackpot_history_channel_id: str | None = None
+    jackpot_message_id: str | None = None
     version: int = 0
     updated_at: datetime | None = None
 
     def outcomes_channel_id(self, game_type: GameType) -> str | None:
         if game_type is GameType.DICE:
             return self.dice_outcomes_channel_id
+        if game_type is GameType.BLACKJACK:
+            return self.blackjack_outcomes_channel_id
+        if game_type is GameType.TARGET:
+            return self.target_outcomes_channel_id
+        if game_type is GameType.LIMBO:
+            return self.blackjack_outcomes_channel_id
+        if game_type is GameType.JACKPOT:
+            return self.jackpot_history_channel_id
         return self.coinflip_outcomes_channel_id
 
     def listing_channel_id(self, game_type: GameType) -> str | None:
         if game_type is GameType.DICE:
             return self.open_dice_channel_id or self.open_games_channel_id
+        if game_type is GameType.BLACKJACK:
+            return self.open_blackjack_channel_id or self.open_games_channel_id
+        if game_type is GameType.TARGET:
+            return self.open_target_channel_id or self.open_games_channel_id
         return self.open_coinflip_channel_id or self.open_games_channel_id
 
     def category_id(self, game_type: GameType) -> str | None:
@@ -463,6 +547,82 @@ class RainRecord:
 
 
 @dataclass(slots=True)
+class JackpotRecord:
+    jackpot_id: str
+    status: JackpotStatus
+    guild_id: str
+    opener_id: str | None = None
+    entries_lamports: dict[str, int] = field(default_factory=dict)
+    channel_id: str | None = None
+    message_id: str | None = None
+    winner_id: str | None = None
+    winner_payout_lamports: int = 0
+    house_fee_lamports: int = 0
+    ticket: int | None = None
+    server_seed_hash: str = ""
+    server_seed: str | None = None
+    client_seed: str = ""
+    nonce: int = 0
+    fair_digest: str = ""
+    ledger_ids: list[str] = field(default_factory=list)
+    version: int = 0
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
+    reveal_until: datetime | None = None
+    resolved_at: datetime | None = None
+
+    def pot_lamports(self) -> int:
+        return sum(int(value) for value in self.entries_lamports.values())
+
+    def opener_lamports(self) -> int | None:
+        if self.opener_id is None:
+            return None
+        if self.opener_id not in self.entries_lamports:
+            return None
+        return int(self.entries_lamports[self.opener_id])
+
+    def has_joined(self, player_id: str) -> bool:
+        return player_id in self.entries_lamports
+
+    def player_ids(self) -> list[str]:
+        return list(self.entries_lamports)
+
+    def is_open(self) -> bool:
+        return self.status is JackpotStatus.OPEN
+
+    def is_showing(self) -> bool:
+        return self.status is JackpotStatus.SHOWING
+
+
+@dataclass(slots=True)
+class TicketRecord:
+    ticket_id: str
+    guild_id: str
+    opener_id: str
+    category: TicketCategory
+    status: TicketStatus = TicketStatus.OPEN
+    number: int = 0
+    subject: str = ""
+    body: str = ""
+    channel_id: str | None = None
+    claimed_by: str | None = None
+    participant_ids: list[str] = field(default_factory=list)
+    close_reason: str = ""
+    chat_log: list[dict] = field(default_factory=list)
+    version: int = 0
+    created_at: datetime | None = None
+    claimed_at: datetime | None = None
+    closed_at: datetime | None = None
+    closed_by: str | None = None
+
+    def is_open(self) -> bool:
+        return self.status is not TicketStatus.CLOSED
+
+    def can_view(self, user_id: str) -> bool:
+        return user_id in {self.opener_id, self.claimed_by, *self.participant_ids}
+
+
+@dataclass(slots=True)
 class TransactionRecord:
     transaction_id: str
     type: TransactionType
@@ -494,8 +654,13 @@ class LedgerRecord:
 class HouseTreasuryRecord:
     sol_balance_lamports: int = 0
     total_fees_collected_lamports: int = 0
+    founder_shares: int = 0
+    investor_shares: int = 0
     version: int = 0
     updated_at: datetime | None = None
+
+    def pool_shares(self) -> int:
+        return self.founder_shares + self.investor_shares
 
 
 @dataclass(frozen=True, slots=True)
@@ -521,6 +686,10 @@ class HouseStatsReport:
     open_tables: int
     sol_price_usd: Decimal
     timeframes: tuple[TimeframeStats, ...]
+    founder_shares: int = 0
+    investor_shares: int = 0
+    founder_pool_lamports: int = 0
+    investor_pool_lamports: int = 0
 
 
 @dataclass(slots=True)

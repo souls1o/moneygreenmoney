@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from casino.domain.blackjack import BlackjackCard, BlackjackHand, BlackjackOutcome
 from casino.domain.enums import (
     CoinSide,
     GameMode,
     GameStatus,
     GameType,
     LedgerEntryType,
+    JackpotStatus,
     RainStatus,
+    TicketCategory,
+    TicketStatus,
     TransactionStatus,
     TransactionType,
     UserRole,
@@ -20,7 +24,9 @@ from casino.domain.records import (
     GuildConfigRecord,
     HouseTreasuryRecord,
     LedgerRecord,
+    JackpotRecord,
     RainRecord,
+    TicketRecord,
     TransactionRecord,
     UserRecord,
 )
@@ -59,6 +65,7 @@ class DocumentMapper:
             "referredWageredLamports": user.referred_wagered_lamports,
             "affiliateEarnedLamports": user.affiliate_earned_lamports,
             "affiliateEarnedUsd": MongoRepository.decimal_to_str(user.affiliate_earned_usd),
+            "investorShares": user.investor_shares,
             "version": user.version,
             "createdAt": user.created_at,
             "updatedAt": user.updated_at,
@@ -89,6 +96,7 @@ class DocumentMapper:
             referred_wagered_lamports=int(document.get("referredWageredLamports", 0)),
             affiliate_earned_lamports=int(document.get("affiliateEarnedLamports", 0)),
             affiliate_earned_usd=MongoRepository.str_to_decimal(document.get("affiliateEarnedUsd")),
+            investor_shares=int(document.get("investorShares", 0)),
             version=int(document.get("version", 0)),
             created_at=self._time.to_utc(document.get("createdAt")),
             updated_at=self._time.to_utc(document.get("updatedAt")),
@@ -151,6 +159,15 @@ class DocumentMapper:
             "currentRoundRolls": [self._dice_roll_to_document(roll) for roll in game.current_round_rolls],
             "diceRolls": [self._dice_roll_to_document(roll) for roll in game.dice_rolls],
             "diceRollingIds": list(game.dice_rolling_ids),
+            "blackjackPlayerHands": [self._blackjack_hand_to_document(hand) for hand in game.blackjack_player_hands],
+            "blackjackDealerCards": [self._blackjack_card_to_document(card) for card in game.blackjack_dealer_cards],
+            "blackjackHoleHidden": game.blackjack_hole_hidden,
+            "blackjackHandIndex": game.blackjack_hand_index,
+            "blackjackCardIndex": game.blackjack_card_index,
+            "targetPicks": {key: int(value) for key, value in game.target_picks.items()},
+            "targetNumber": game.target_number,
+            "limboTarget": MongoRepository.decimal_to_str(game.limbo_target) if game.limbo_target is not None else None,
+            "limboResult": MongoRepository.decimal_to_str(game.limbo_result) if game.limbo_result is not None else None,
         }
 
     def game_from_document(self, document: dict[str, Any]) -> GameRecord:
@@ -215,7 +232,71 @@ class DocumentMapper:
             current_round_rolls=self._dice_rolls_from_document(document.get("currentRoundRolls")),
             dice_rolls=self._dice_rolls_from_document(document.get("diceRolls")),
             dice_rolling_ids=list(document.get("diceRollingIds") or []),
+            blackjack_player_hands=self._blackjack_hands_from_document(document.get("blackjackPlayerHands")),
+            blackjack_dealer_cards=self._blackjack_cards_from_document(document.get("blackjackDealerCards")),
+            blackjack_hole_hidden=bool(document.get("blackjackHoleHidden", True)),
+            blackjack_hand_index=int(document.get("blackjackHandIndex") or 0),
+            blackjack_card_index=int(document.get("blackjackCardIndex") or 0),
+            target_picks={
+                str(key): int(value) for key, value in (document.get("targetPicks") or {}).items()
+            },
+            target_number=int(document["targetNumber"]) if document.get("targetNumber") is not None else None,
+            limbo_target=(
+                MongoRepository.str_to_decimal(document.get("limboTarget"))
+                if document.get("limboTarget") not in (None, "")
+                else None
+            ),
+            limbo_result=(
+                MongoRepository.str_to_decimal(document.get("limboResult"))
+                if document.get("limboResult") not in (None, "")
+                else None
+            ),
         )
+
+    def _blackjack_card_to_document(self, card: BlackjackCard) -> dict[str, Any]:
+        return {"rank": card.rank, "suit": card.suit}
+
+    def _blackjack_cards_from_document(self, value: object) -> list[BlackjackCard]:
+        if not isinstance(value, list):
+            return []
+        cards: list[BlackjackCard] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            cards.append(BlackjackCard(rank=int(item.get("rank") or 0), suit=int(item.get("suit") or 0)))
+        return cards
+
+    def _blackjack_hand_to_document(self, hand: BlackjackHand) -> dict[str, Any]:
+        return {
+            "cards": [self._blackjack_card_to_document(card) for card in hand.cards],
+            "betLamports": hand.bet_lamports,
+            "stood": hand.stood,
+            "doubled": hand.doubled,
+            "fromSplit": hand.from_split,
+            "fromSplitAces": hand.from_split_aces,
+            "outcome": hand.outcome.value if hand.outcome is not None else None,
+        }
+
+    def _blackjack_hands_from_document(self, value: object) -> list[BlackjackHand]:
+        if not isinstance(value, list):
+            return []
+        hands: list[BlackjackHand] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            outcome_raw = item.get("outcome")
+            hands.append(
+                BlackjackHand(
+                    cards=self._blackjack_cards_from_document(item.get("cards")),
+                    bet_lamports=int(item.get("betLamports") or 0),
+                    stood=bool(item.get("stood")),
+                    doubled=bool(item.get("doubled")),
+                    from_split=bool(item.get("fromSplit")),
+                    from_split_aces=bool(item.get("fromSplitAces")),
+                    outcome=BlackjackOutcome(outcome_raw) if outcome_raw else None,
+                )
+            )
+        return hands
 
     def _dice_roll_to_document(self, roll: DiceRollRecord) -> dict[str, Any]:
         return {
@@ -274,10 +355,14 @@ class DocumentMapper:
             "coinflipCategoryId": config.coinflip_category_id,
             "diceOutcomesChannelId": config.dice_outcomes_channel_id,
             "diceCategoryId": config.dice_category_id,
+            "blackjackOutcomesChannelId": config.blackjack_outcomes_channel_id,
+            "targetOutcomesChannelId": config.target_outcomes_channel_id,
             "provablyFairChannelId": config.provably_fair_channel_id,
             "openGamesChannelId": config.open_games_channel_id,
             "openCoinflipChannelId": config.open_coinflip_channel_id,
             "openDiceChannelId": config.open_dice_channel_id,
+            "openBlackjackChannelId": config.open_blackjack_channel_id,
+            "openTargetChannelId": config.open_target_channel_id,
             "depositAlertsChannelId": config.deposit_alerts_channel_id,
             "withdrawalAlertsChannelId": config.withdrawal_alerts_channel_id,
             "houseLedgerChannelId": config.house_ledger_channel_id,
@@ -285,8 +370,17 @@ class DocumentMapper:
             "rainPingRoleId": config.rain_ping_role_id,
             "verifyChannelId": config.verify_channel_id,
             "memberRoleId": config.member_role_id,
+            "investorRoleId": config.investor_role_id,
+            "supportChannelId": config.support_channel_id,
+            "supportCategoryId": config.support_category_id,
+            "supportRoleId": config.support_role_id,
+            "supportLogsChannelId": config.support_logs_channel_id,
+            "supportMessageId": config.support_message_id,
             "provablyFairMessageId": config.provably_fair_message_id,
             "verifyMessageId": config.verify_message_id,
+            "jackpotChannelId": config.jackpot_channel_id,
+            "jackpotHistoryChannelId": config.jackpot_history_channel_id,
+            "jackpotMessageId": config.jackpot_message_id,
             "version": config.version,
             "updatedAt": config.updated_at,
         }
@@ -298,10 +392,14 @@ class DocumentMapper:
             coinflip_category_id=document.get("coinflipCategoryId"),
             dice_outcomes_channel_id=document.get("diceOutcomesChannelId"),
             dice_category_id=document.get("diceCategoryId"),
+            blackjack_outcomes_channel_id=document.get("blackjackOutcomesChannelId"),
+            target_outcomes_channel_id=document.get("targetOutcomesChannelId"),
             provably_fair_channel_id=document.get("provablyFairChannelId"),
             open_games_channel_id=document.get("openGamesChannelId"),
             open_coinflip_channel_id=document.get("openCoinflipChannelId"),
             open_dice_channel_id=document.get("openDiceChannelId"),
+            open_blackjack_channel_id=document.get("openBlackjackChannelId"),
+            open_target_channel_id=document.get("openTargetChannelId"),
             deposit_alerts_channel_id=document.get("depositAlertsChannelId"),
             withdrawal_alerts_channel_id=document.get("withdrawalAlertsChannelId"),
             house_ledger_channel_id=document.get("houseLedgerChannelId"),
@@ -309,8 +407,17 @@ class DocumentMapper:
             rain_ping_role_id=document.get("rainPingRoleId"),
             verify_channel_id=document.get("verifyChannelId"),
             member_role_id=document.get("memberRoleId"),
+            investor_role_id=document.get("investorRoleId"),
+            support_channel_id=document.get("supportChannelId"),
+            support_category_id=document.get("supportCategoryId"),
+            support_role_id=document.get("supportRoleId"),
+            support_logs_channel_id=document.get("supportLogsChannelId"),
+            support_message_id=document.get("supportMessageId"),
             provably_fair_message_id=document.get("provablyFairMessageId"),
             verify_message_id=document.get("verifyMessageId"),
+            jackpot_channel_id=document.get("jackpotChannelId"),
+            jackpot_history_channel_id=document.get("jackpotHistoryChannelId"),
+            jackpot_message_id=document.get("jackpotMessageId"),
             version=int(document.get("version", 0)),
             updated_at=self._time.to_utc(document.get("updatedAt")),
         )
@@ -370,6 +477,119 @@ class DocumentMapper:
             created_at=self._time.to_utc(document.get("createdAt")),
             expires_at=self._time.to_utc(document.get("expiresAt")),
             resolved_at=self._time.to_utc(document.get("resolvedAt")),
+        )
+
+    def jackpot_to_document(self, jackpot: JackpotRecord) -> dict[str, Any]:
+        document: dict[str, Any] = {
+            "jackpotId": jackpot.jackpot_id,
+            "status": jackpot.status.value,
+            "guildId": jackpot.guild_id,
+            "entriesLamports": {key: int(value) for key, value in jackpot.entries_lamports.items()},
+            "serverSeedHash": jackpot.server_seed_hash,
+            "clientSeed": jackpot.client_seed,
+            "nonce": jackpot.nonce,
+            "fairDigest": jackpot.fair_digest,
+            "ledgerIds": list(jackpot.ledger_ids),
+            "winnerPayoutLamports": jackpot.winner_payout_lamports,
+            "houseFeeLamports": jackpot.house_fee_lamports,
+            "version": jackpot.version,
+            "createdAt": jackpot.created_at,
+        }
+        if jackpot.opener_id:
+            document["openerId"] = jackpot.opener_id
+        if jackpot.channel_id:
+            document["channelId"] = jackpot.channel_id
+        if jackpot.message_id:
+            document["messageId"] = jackpot.message_id
+        if jackpot.winner_id:
+            document["winnerId"] = jackpot.winner_id
+        if jackpot.ticket is not None:
+            document["ticket"] = jackpot.ticket
+        if jackpot.server_seed:
+            document["serverSeed"] = jackpot.server_seed
+        if jackpot.expires_at:
+            document["expiresAt"] = jackpot.expires_at
+        if jackpot.reveal_until:
+            document["revealUntil"] = jackpot.reveal_until
+        if jackpot.resolved_at:
+            document["resolvedAt"] = jackpot.resolved_at
+        return document
+
+    def jackpot_from_document(self, document: dict[str, Any]) -> JackpotRecord:
+        entries = document.get("entriesLamports") or {}
+        return JackpotRecord(
+            jackpot_id=document["jackpotId"],
+            status=JackpotStatus(document["status"]),
+            guild_id=document["guildId"],
+            opener_id=document.get("openerId"),
+            entries_lamports={str(key): int(value) for key, value in entries.items()},
+            channel_id=document.get("channelId"),
+            message_id=document.get("messageId"),
+            winner_id=document.get("winnerId"),
+            winner_payout_lamports=int(document.get("winnerPayoutLamports") or 0),
+            house_fee_lamports=int(document.get("houseFeeLamports") or 0),
+            ticket=int(document["ticket"]) if document.get("ticket") is not None else None,
+            server_seed_hash=document.get("serverSeedHash") or "",
+            server_seed=document.get("serverSeed"),
+            client_seed=document.get("clientSeed") or "",
+            nonce=int(document.get("nonce") or 0),
+            fair_digest=document.get("fairDigest") or "",
+            ledger_ids=list(document.get("ledgerIds") or []),
+            version=int(document.get("version", 0)),
+            created_at=self._time.to_utc(document.get("createdAt")),
+            expires_at=self._time.to_utc(document.get("expiresAt")),
+            reveal_until=self._time.to_utc(document.get("revealUntil")),
+            resolved_at=self._time.to_utc(document.get("resolvedAt")),
+        )
+
+    def ticket_to_document(self, ticket: TicketRecord) -> dict[str, Any]:
+        document: dict[str, Any] = {
+            "ticketId": ticket.ticket_id,
+            "guildId": ticket.guild_id,
+            "openerId": ticket.opener_id,
+            "category": ticket.category.value,
+            "status": ticket.status.value,
+            "number": ticket.number,
+            "subject": ticket.subject,
+            "body": ticket.body,
+            "participantIds": list(ticket.participant_ids),
+            "closeReason": ticket.close_reason,
+            "chatLog": list(ticket.chat_log),
+            "version": ticket.version,
+            "createdAt": ticket.created_at,
+        }
+        if ticket.channel_id:
+            document["channelId"] = ticket.channel_id
+        if ticket.claimed_by:
+            document["claimedBy"] = ticket.claimed_by
+        if ticket.claimed_at:
+            document["claimedAt"] = ticket.claimed_at
+        if ticket.closed_at:
+            document["closedAt"] = ticket.closed_at
+        if ticket.closed_by:
+            document["closedBy"] = ticket.closed_by
+        return document
+
+    def ticket_from_document(self, document: dict[str, Any]) -> TicketRecord:
+        return TicketRecord(
+            ticket_id=document["ticketId"],
+            guild_id=document["guildId"],
+            opener_id=document["openerId"],
+            category=TicketCategory(document["category"]),
+            status=TicketStatus(document["status"]),
+            number=int(document.get("number") or 0),
+            subject=document.get("subject") or "",
+            body=document.get("body") or "",
+            channel_id=document.get("channelId"),
+            claimed_by=document.get("claimedBy"),
+            participant_ids=list(document.get("participantIds") or []),
+            close_reason=document.get("closeReason") or "",
+            chat_log=list(document.get("chatLog") or []),
+            version=int(document.get("version", 0)),
+            created_at=self._time.to_utc(document.get("createdAt")),
+            claimed_at=self._time.to_utc(document.get("claimedAt")),
+            closed_at=self._time.to_utc(document.get("closedAt")),
+            closed_by=document.get("closedBy"),
         )
 
     def transaction_to_document(self, tx: TransactionRecord) -> dict[str, Any]:
@@ -435,6 +655,8 @@ class DocumentMapper:
         return HouseTreasuryRecord(
             sol_balance_lamports=int(document.get("solBalanceLamports", 0)),
             total_fees_collected_lamports=int(document.get("totalFeesCollectedLamports", 0)),
+            founder_shares=int(document.get("founderShares", 0)),
+            investor_shares=int(document.get("investorShares", 0)),
             version=int(document.get("version", 0)),
             updated_at=self._time.to_utc(document.get("updatedAt")),
         )

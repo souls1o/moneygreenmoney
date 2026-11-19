@@ -54,6 +54,27 @@ class TestDocumentMapper:
         assert game.player1_side is CoinSide.HEADS
         assert game.ready_ids == []
 
+    def test_ticket_round_trip(self) -> None:
+        from casino.domain.enums import TicketCategory, TicketStatus
+        from casino.domain.records import TicketRecord
+
+        mapper = DocumentMapper()
+        ticket = TicketRecord(
+            ticket_id="tk_1",
+            guild_id="g",
+            opener_id="u",
+            category=TicketCategory.GAME,
+            status=TicketStatus.OPEN,
+            number=4,
+            subject="Dice dispute",
+            body="Wrong winner shown.",
+        )
+        document = mapper.ticket_to_document(ticket)
+        loaded = mapper.ticket_from_document(document)
+        assert loaded.ticket_id == "tk_1"
+        assert loaded.category is TicketCategory.GAME
+        assert loaded.subject == "Dice dispute"
+
     def test_guild_config_maps_open_games_and_pf_message(self) -> None:
         mapper = DocumentMapper()
         config = mapper.guild_config_from_document(
@@ -91,6 +112,23 @@ class TestDocumentMapper:
         document = mapper.guild_config_to_document(config)
         assert document["openCoinflipChannelId"] == "11"
         assert document["openDiceChannelId"] == "12"
+
+    def test_guild_config_maps_blackjack_channels(self) -> None:
+        from casino.domain.enums import GameType
+
+        mapper = DocumentMapper()
+        config = mapper.guild_config_from_document(
+            {
+                "guildId": "1",
+                "openBlackjackChannelId": "13",
+                "blackjackOutcomesChannelId": "14",
+            }
+        )
+        assert config.listing_channel_id(GameType.BLACKJACK) == "13"
+        assert config.outcomes_channel_id(GameType.BLACKJACK) == "14"
+        document = mapper.guild_config_to_document(config)
+        assert document["openBlackjackChannelId"] == "13"
+        assert document["blackjackOutcomesChannelId"] == "14"
 
     def test_listing_channel_falls_back_to_legacy_open_games(self) -> None:
         from casino.domain.enums import GameType

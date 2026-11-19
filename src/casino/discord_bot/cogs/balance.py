@@ -29,6 +29,17 @@ class BalanceCog(commands.Cog):
             await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
             panel.stop()
 
+    @app_commands.command(name="housebal", description="Show how much SOL is in the house book")
+    @app_commands.allowed_installs(guilds=True, users=True)
+    @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+    async def housebal(self, interaction: discord.Interaction) -> None:
+        await self._container.rate_limits.enforce(f"housebal:{interaction.user.id}")
+        treasury = await self._container.admin.house_treasury()
+        quote = await self._container.price.get_quote(allow_stale=True)
+        panel = self._embeds.house_balance(treasury.sol_balance_lamports, quote)
+        await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+        panel.stop()
+
     @app_commands.command(name="tip", description="Send SOL from your balance to another player")
     @app_commands.describe(
         member="Player to tip",
@@ -64,3 +75,27 @@ class BalanceCog(commands.Cog):
                     ),
                 ).send_kwargs(ephemeral=True)
             )
+            from casino.discord_bot.bot import CasinoBot
+
+            bot = interaction.client
+            if isinstance(bot, CasinoBot):
+                await bot.notifications.tip_received(
+                    str(member.id),
+                    str(interaction.user.id),
+                    result.amount,
+                    fiat=fiat,
+                    currency=currency,
+                )
+            channel = interaction.channel
+            if isinstance(channel, discord.abc.Messageable):
+                try:
+                    await channel.send(
+                        content=(
+                            f"{member.mention} received "
+                            f"**{self._container.math.format_fiat_symbol(fiat, currency)}** "
+                            f"from {interaction.user.mention}."
+                        ),
+                        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+                    )
+                except discord.HTTPException:
+                    pass
