@@ -57,6 +57,7 @@ class CasinoBot(commands.Bot):
         container.withdrawals.set_listener(self.admin_alerts.on_withdrawal)
         self._errors = DiscordErrorPresenter()
         self._logger = get_logger("casino.discord")
+        self._presence_status_texts: dict[int, tuple[str, ...]] = {}
 
     async def setup_hook(self) -> None:
         from casino.discord_bot.cogs.router import ComponentRouterCog
@@ -99,7 +100,6 @@ class CasinoBot(commands.Bot):
             guildCount=guild_count,
         )
 
-    async def on_ready(self) -> None:
     def remember_presence_texts(self, member: discord.Member | discord.User | None) -> None:
         if member is None:
             return
@@ -113,6 +113,7 @@ class CasinoBot(commands.Bot):
     async def on_presence_update(self, before: discord.Member, after: discord.Member) -> None:
         self.remember_presence_texts(after)
 
+    async def on_ready(self) -> None:
         self._logger.info("discord_ready", user=str(self.user), userId=str(self.user.id) if self.user else None)
         try:
             await self.rains.resume()
