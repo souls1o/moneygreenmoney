@@ -4,12 +4,10 @@ import argparse
 import asyncio
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 from casino.config.settings import Settings
 from casino.container import ContainerFactory
 from casino.db.mongo import COLLECTION_GAMES
-from casino.domain.enums import LedgerEntryType, TransactionType
 from casino.solana_client.keys import KeypairLoader
 from casino.solana_client.rpc import RENT_EXEMPT_FALLBACK_LAMPORTS, SWEEP_FEE_LAMPORTS, sweepable_lamports
 from casino.utils.money import MathService, SolAmount
@@ -31,11 +29,8 @@ class MigrationPlan:
     rent: int
     fee: int
     house_book: int
-    house_on_chain: int
     player_total: int
-    player_on_chain: int
     legs: tuple[MigrationLeg, ...]
-    notes: tuple[str, ...]
     open_tables: int
     open_rains: int
     open_jackpots: int
@@ -50,12 +45,8 @@ class MigrationPlan:
         return self.transfer_count * self.fee
 
     @property
-    def send_total(self) -> int:
-        return sum(leg.lamports for leg in self.legs)
-
-    @property
     def needed(self) -> int:
-        return self.send_total + self.fee_budget
+        return self.player_total + self.house_book + self.fee_budget
 
     @property
     def leftover(self) -> int:
@@ -64,13 +55,11 @@ class MigrationPlan:
     @property
     def blockers(self) -> tuple[str, ...]:
         reasons: list[str] = []
-        player_send = sum(leg.lamports for leg in self.legs if leg.kind == "player")
-        player_fees = sum(1 for leg in self.legs if leg.kind == "player") * self.fee
-        if player_send + player_fees + self.rent > self.super_balance:
-            short = player_send + player_fees + self.rent - self.super_balance
+        if self.needed + self.rent > self.super_balance:
+            short = self.needed + self.rent - self.super_balance
             reasons.append(
                 f"Super wallet is short {SolAmount.from_lamports(short).to_decimal()} SOL "
-                "to top up player deposit wallets after rent and transfer fees."
+                "after rent and transfer fees."
             )
         if not self.force and (self.open_tables or self.open_rains or self.open_jackpots):
             reasons.append(
@@ -78,11 +67,9 @@ class MigrationPlan:
                 "(their locked SOL is not in player balances or the house book). "
                 "Re-run, or pass --force if you are sure."
             )
+        if not self.legs:
+            reasons.append("Nothing to send: player balances and house book are zero.")
         return tuple(reasons)
-
-
-def house_book_gap(book_lamports: int, on_chain_lamports: int) -> int:
-    return max(int(book_lamports) - max(int(on_chain_lamports), 0), 0)
 
 
 def build_plan(
@@ -94,73 +81,41 @@ def build_plan(
     fee: int,
     house_book: int,
     players: list[tuple[str, str, int]],
-    house_on_chain: int = 0,
-    player_on_chain: dict[str, int] | None = None,
     open_tables: int = 0,
     open_rains: int = 0,
     open_jackpots: int = 0,
     force: bool = False,
 ) -> MigrationPlan:
-    already = player_on_chain or {}
-    notes: list[str] = []
     legs: list[MigrationLeg] = []
-    player_book = 0
-    player_have = 0
     for discord_id, address, lamports in players:
-        player_book += max(lamports, 0)
-        have = max(int(already.get(discord_id, 0)), 0)
-        player_have += have
-        send = max(lamports - have, 0)
-        if send <= 0:
+        if lamports <= 0:
             continue
         legs.append(
             MigrationLeg(
                 kind="player",
                 label=f"player {discord_id}",
                 destination=address,
-                lamports=send,
+                lamports=lamports,
             )
         )
-    house_book = max(house_book, 0)
-    house_have = max(house_on_chain, 0)
-    house_need = max(house_book - house_have, 0)
-    player_send = sum(leg.lamports for leg in legs)
-    player_fees = len(legs) * fee
-    remaining = super_balance - rent - player_send - player_fees
-    if house_need > 0:
-        house_fee = fee
-        house_send = min(house_need, max(remaining - house_fee, 0))
-        if house_send > 0:
-            legs.append(
-                MigrationLeg(
-                    kind="house",
-                    label="house book",
-                    destination=house_address,
-                    lamports=house_send,
-                )
+    if house_book > 0:
+        legs.append(
+            MigrationLeg(
+                kind="house",
+                label="house book",
+                destination=house_address,
+                lamports=house_book,
             )
-        if house_send < house_need:
-            short = house_need - house_send
-            notes.append(
-                f"House wallet already holds part of the book. Super will send "
-                f"{SolAmount.from_lamports(house_send).to_decimal()} SOL more; "
-                f"house on-chain will still be "
-                f"{SolAmount.from_lamports(short).to_decimal()} SOL below the book."
-            )
-    elif house_have > house_book:
-        notes.append("House wallet already holds at least the house book. No house transfer.")
+        )
     return MigrationPlan(
         super_address=super_address,
         house_address=house_address,
         super_balance=super_balance,
         rent=rent,
         fee=fee,
-        house_book=house_book,
-        house_on_chain=house_have,
-        player_total=player_book,
-        player_on_chain=player_have,
+        house_book=max(house_book, 0),
+        player_total=sum(leg.lamports for leg in legs if leg.kind == "player"),
         legs=tuple(legs),
-        notes=tuple(notes),
         open_tables=open_tables,
         open_rains=open_rains,
         open_jackpots=open_jackpots,
@@ -175,12 +130,8 @@ def _print_plan(plan: MigrationPlan, math: MathService) -> None:
     print(f"Super wallet: {plan.super_address}")
     print(f"On-chain:     {sol(plan.super_balance)}")
     print(f"House wallet: {plan.house_address}")
-    print(f"House book:   {sol(plan.house_book)}  (already on-chain {sol(plan.house_on_chain)})")
-    print(
-        f"Player books: {sol(plan.player_total)}  "
-        f"(already on deposit addresses {sol(plan.player_on_chain)})"
-    )
-    print(f"Still to send: {sol(plan.send_total)}")
+    print(f"House book:   {sol(plan.house_book)}")
+    print(f"Player books: {sol(plan.player_total)}  ({sum(1 for leg in plan.legs if leg.kind == 'player')} wallets)")
     print(f"Tx fees:      {sol(plan.fee_budget)}  ({plan.transfer_count} transfers × {plan.fee} lamports)")
     print(f"Needed:       {sol(plan.needed)} plus rent {sol(plan.rent)}")
     print(f"Leftover:     {sol(max(plan.leftover, 0))} (stays in super, or send later)")
@@ -190,25 +141,8 @@ def _print_plan(plan: MigrationPlan, math: MathService) -> None:
             f"{plan.open_jackpots} jackpots"
         )
     print()
-    if not plan.legs:
-        print()
-        print("Nothing to send. Player deposits and the house wallet already cover the books.")
     for index, leg in enumerate(plan.legs, start=1):
         print(f"{index}. {leg.label}: {sol(leg.lamports)} -> {leg.destination}")
-    house_after = plan.house_on_chain + sum(leg.lamports for leg in plan.legs if leg.kind == "house")
-    gap = house_book_gap(plan.house_book, house_after)
-    print()
-    if gap:
-        print(
-            f"Then set house book {sol(plan.house_book)} -> {sol(house_after)} "
-            f"(ledger only, -{sol(gap)})"
-        )
-    else:
-        print("House book already matches the house wallet.")
-    if plan.notes:
-        print()
-        for note in plan.notes:
-            print(note)
     if plan.blockers:
         print()
         print("Blocked:")
@@ -216,34 +150,11 @@ def _print_plan(plan: MigrationPlan, math: MathService) -> None:
             print(f"- {reason}")
 
 
-def _load_env_files() -> None:
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    for name in (".env", ".env.prod", ".env.dev"):
-        path = Path(name)
-        if path.is_file():
-            load_dotenv(path, override=False)
-
-
-def _super_wallet_secret(settings: Settings) -> str:
-    if settings.super_wallet_private_key is not None:
-        value = settings.super_wallet_private_key.get_secret_value().strip()
-        if value:
-            return value
-    return os.environ.get("SUPER_WALLET_PRIVATE_KEY", "").strip()
-
-
 async def _build_live_plan(*, force: bool) -> tuple[object, object, MigrationPlan]:
-    _load_env_files()
-    settings = Settings()  # type: ignore[call-arg]
-    secret = _super_wallet_secret(settings)
+    secret = os.environ.get("SUPER_WALLET_PRIVATE_KEY", "").strip()
     if not secret:
-        raise SystemExit(
-            "SUPER_WALLET_PRIVATE_KEY was not found in .env / .env.prod / .env.dev. "
-            "Keep that line in the env file you are using, then run this from the same directory."
-        )
+        raise SystemExit("Set SUPER_WALLET_PRIVATE_KEY in the environment (your current .env is fine).")
+    settings = Settings()  # type: ignore[call-arg]
     if not settings.solana_private_key or not settings.deposit_master_secret:
         raise SystemExit("Set SOLANA_PRIVATE_KEY and DEPOSIT_MASTER_SECRET first.")
     container = ContainerFactory().build(settings)
@@ -262,19 +173,12 @@ async def _build_live_plan(*, force: bool) -> tuple[object, object, MigrationPla
         raise SystemExit("SUPER_WALLET_PRIVATE_KEY matches the house wallet. Nothing to split.")
     super_balance = await container.solana.get_balance(super_address)
     rent = await container.solana.get_rent_exempt_lamports()
-    house_on_chain = await container.solana.get_balance(house_address)
     treasury = await container.house.get()
     users = await container.users.list_positive_balances()
     players: list[tuple[str, str, int]] = []
-    player_on_chain: dict[str, int] = {}
     for user in users:
         address = user.deposit_address or container.solana.player_address(user.discord_id)
         players.append((user.discord_id, address, user.sol_balance_lamports))
-        try:
-            player_on_chain[user.discord_id] = await container.solana.get_balance(address)
-        except Exception:
-            player_on_chain[user.discord_id] = 0
-        await asyncio.sleep(float(getattr(settings, "deposit_rpc_gap_seconds", 0) or 0))
     games = container.mongo.db[COLLECTION_GAMES]
     open_tables = await games.count_documents({"status": {"$in": ["pending", "active"]}})
     open_rains = len(await container.rains.list_open())
@@ -287,8 +191,6 @@ async def _build_live_plan(*, force: bool) -> tuple[object, object, MigrationPla
         fee=SWEEP_FEE_LAMPORTS,
         house_book=treasury.sol_balance_lamports,
         players=players,
-        house_on_chain=house_on_chain,
-        player_on_chain=player_on_chain,
         open_tables=open_tables,
         open_rains=open_rains,
         open_jackpots=open_jackpots,
@@ -308,11 +210,8 @@ async def _run(*, apply: bool, force: bool) -> None:
             return
         if plan.blockers:
             raise SystemExit("Refusing to send until the blockers above are fixed.")
-        if not plan.legs:
-            print("Already migrated.")
-            return
         spendable = sweepable_lamports(plan.super_balance, plan.rent)
-        if plan.send_total > spendable:
+        if plan.player_total + plan.house_book > spendable:
             raise SystemExit("Super wallet cannot cover the plan after rent.")
         for leg in plan.legs:
             signature = await container.solana.send_from_keypair(
@@ -323,52 +222,6 @@ async def _run(*, apply: bool, force: bool) -> None:
             print(f"sent {leg.label}: {signature}")
         leftover = await container.solana.get_balance(plan.super_address)
         print(f"done. super leftover {math.format_sol(SolAmount.from_lamports(leftover))} SOL")
-        await _sync_house_book(container, apply=True)
-    finally:
-        await container.solana.close()
-        await container.mongo.close()
-
-
-async def _sync_house_book(container, *, apply: bool) -> None:
-    house_address = container.solana.house_address
-    if not house_address:
-        raise SystemExit("House wallet is not configured.")
-    on_chain = await container.solana.get_balance(house_address)
-    treasury = await container.house.get()
-    gap = house_book_gap(treasury.sol_balance_lamports, on_chain)
-    math = container.math
-    before = math.format_sol(SolAmount.from_lamports(treasury.sol_balance_lamports))
-    after = math.format_sol(SolAmount.from_lamports(on_chain))
-    if gap <= 0:
-        print(f"House book {before} SOL already at or below house wallet {after} SOL.")
-        return
-    print(f"House book {before} SOL -> {after} SOL (write down {math.format_sol(SolAmount.from_lamports(gap))} SOL).")
-    if not apply:
-        print("Dry run only. Re-run with --sync-house-book --apply to update the ledger.")
-        return
-    quote = await container.price.get_quote(allow_stale=True)
-    treasury, _entry = await container.balances.debit_house_reserve(
-        amount=SolAmount.from_lamports(gap),
-        price_usd=quote.sol_price("USD"),
-        description="Sync house book down to on-chain house wallet after super migration",
-        entry_type=LedgerEntryType.ADJUSTMENT,
-        transaction_type=TransactionType.ADJUSTMENT,
-    )
-    print(
-        f"House book is now {math.format_sol(SolAmount.from_lamports(treasury.sol_balance_lamports))} SOL."
-    )
-
-
-async def _run_sync_only(*, apply: bool) -> None:
-    _load_env_files()
-    settings = Settings()  # type: ignore[call-arg]
-    if not settings.solana_private_key:
-        raise SystemExit("Set SOLANA_PRIVATE_KEY first.")
-    container = ContainerFactory().build(settings)
-    await container.mongo.connect()
-    await container.solana.connect()
-    try:
-        await _sync_house_book(container, apply=apply)
     finally:
         await container.solana.close()
         await container.mongo.close()
@@ -381,22 +234,14 @@ def main() -> None:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Send the transfers and sync the house book. Default is a dry run.",
+        help="Send the transfers. Default is a dry run.",
     )
     parser.add_argument(
         "--force",
         action="store_true",
         help="Allow sending even if games, rains, or jackpots are still open.",
     )
-    parser.add_argument(
-        "--sync-house-book",
-        action="store_true",
-        help="Only lower the house book to the house wallet on-chain balance (no SOL sends).",
-    )
     args = parser.parse_args()
-    if args.sync_house_book:
-        asyncio.run(_run_sync_only(apply=args.apply))
-        return
     asyncio.run(_run(apply=args.apply, force=args.force))
 
 

@@ -16,7 +16,7 @@ from casino.services.investor_service import InvestorService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.solana_client.addresses import SolanaAddressValidator
-from casino.solana_client.rpc import SolanaRpcGateway
+from casino.solana_client.rpc import SWEEP_FEE_LAMPORTS, SolanaRpcGateway
 from casino.utils.money import SolAmount
 
 
@@ -171,22 +171,22 @@ class AdminService:
     ) -> HouseWithdrawalResult:
         if amount.is_zero():
             raise ValidationError("Enter a withdrawal amount greater than zero.")
-        if not self._rpc.has_house_wallet:
-            raise ConfigurationError("House withdrawals need SOLANA_PRIVATE_KEY.")
+        if not self._rpc.super_address:
+            raise ConfigurationError("House withdrawals need SUPER_WALLET_PRIVATE_KEY.")
         wallet_raw = destination.strip()
         if not wallet_raw:
             raise ValidationError("Enter a destination wallet.")
         wallet = self._addresses.parse(wallet_raw)
-        if wallet == self._rpc.house_address:
+        if wallet == self._rpc.super_address:
             raise ValidationError("Choose a different destination wallet.")
 
-        house_address = self._rpc.house_address
-        if not house_address:
-            raise ConfigurationError("House withdrawals need SOLANA_PRIVATE_KEY.")
-        spendable = await self._rpc.spendable_lamports(house_address)
-        if amount.lamports > spendable:
+        await self._rpc.collect_house_into_super()
+        super_balance = await self._rpc.get_balance(self._rpc.super_address)
+        rent = await self._rpc.get_rent_exempt_lamports()
+        needed = amount.lamports + SWEEP_FEE_LAMPORTS + rent
+        if super_balance < needed:
             raise WithdrawalError(
-                "The house wallet does not have enough on-chain SOL to pay this withdrawal right now."
+                "The super wallet does not have enough on-chain SOL to pay this house withdrawal right now."
             )
 
         quote = await self._prices.get_quote(allow_stale=True)
@@ -214,7 +214,7 @@ class AdminService:
             raise WithdrawalError("The house book does not have enough SOL for this withdrawal.") from exc
 
         try:
-            signature = await self._rpc.send_from_house(wallet, amount)
+            signature = await self._rpc.send_from_super(wallet, amount)
         except Exception as exc:
             self._logger.exception(
                 "house_withdrawal_send_failed",
@@ -276,7 +276,7 @@ def _house_send_error(exc: BaseException) -> str:
     if "blockhash" in detail:
         return "Solana rejected the transaction. House reserves were refunded. Try again."
     if "insufficient" in detail or "no record of a prior credit" in detail:
-        return "The house wallet could not pay this withdrawal. House reserves were refunded."
+        return "The super wallet could not pay this house withdrawal. House reserves were refunded."
     if "rate" in detail or "too many" in detail or "forbidden" in detail or "method not found" in detail:
         return "The Solana RPC could not send the house withdrawal. House reserves were refunded."
     return "The house withdrawal could not be sent. House reserves were refunded."

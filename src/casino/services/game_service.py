@@ -43,7 +43,6 @@ from casino.repositories.jackpot_repository import JackpotRepository
 from casino.repositories.user_repository import UserRepository
 from casino.services.affiliate_service import AffiliateService
 from casino.services.balance_service import BalanceService
-from casino.services.custody_service import CustodyService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.services.validation_service import ValidationService
@@ -73,7 +72,6 @@ class GameService:
         house_repository: HouseRepository,
         affiliates: AffiliateService | None = None,
         jackpot_repository: JackpotRepository | None = None,
-        custody: CustodyService | None = None,
     ) -> None:
         self._games = game_repository
         self._users = user_repository
@@ -88,11 +86,10 @@ class GameService:
         self._uow = unit_of_work
         self._settings = settings
         self._house = house_repository
-        self._jackpots = jackpot_repository
-        self._custody = custody or CustodyService()
         self._affiliates = affiliates or AffiliateService(
-            user_repository, user_service, balance_service, clock, custody=self._custody
+            user_repository, user_service, balance_service, clock
         )
+        self._jackpots = jackpot_repository
         self._logger = get_logger("casino.game")
 
     async def create_game(
@@ -1098,7 +1095,6 @@ class GameService:
         delay = self._settings.table_idle_delete_seconds
         if game.private_channel_id:
             game.channel_delete_at = now + timedelta(seconds=delay)
-        await self._custody.settle_game(game)
         self._logger.info(
             "game_resolved",
             winnerIds=winners,
@@ -1492,7 +1488,6 @@ class GameService:
         game.per_winner_payout_lamports = player_payout.lamports
         game.resolved_at = now
         game.expires_at = None
-        await self._custody.settle_game(game)
         self._logger.info(
             "game_resolved",
             winnerIds=game.winner_ids,
@@ -1662,7 +1657,6 @@ class GameService:
         game.resolved_at = now
         game.expires_at = None
         game.auto_flip_at = None
-        await self._custody.settle_game(game)
         self._logger.info(
             "game_resolved",
             winnerIds=game.winner_ids,
@@ -1836,7 +1830,6 @@ class GameService:
         game.resolved_at = now
         game.expires_at = None
         game.auto_flip_at = None
-        await self._custody.settle_game(game)
         self._logger.info(
             "game_resolved",
             winnerIds=game.winner_ids,

@@ -26,9 +26,27 @@ class StubRpc:
     is_configured = True
     has_house_wallet = True
     house_address = "House1111111111111111111111111111111111111"
+    super_address = "Super1111111111111111111111111111111111111"
+    swept: list[str] = []
 
     async def get_parsed_transaction(self, signature: str):
         return None
+
+    async def sweep_to_super(self, source) -> str | None:
+        self.swept.append(str(source))
+        return "sweep-sig"
+
+    async def collect_house_into_super(self) -> str | None:
+        return await self.sweep_to_super(self.house_keypair())
+
+    async def collect_user_into_super(self, discord_id: str) -> str | None:
+        return await self.sweep_to_super(self.player_keypair(discord_id))
+
+    def player_keypair(self, discord_id: str):
+        return f"player-{discord_id}"
+
+    def house_keypair(self):
+        return "house"
 
 
 class GameLessParser:
@@ -54,6 +72,7 @@ def _service(users_repo=None, house_repo=None, tx_repo=None, ledger_repo=None):
         clock,
     )
     rpc = StubRpc()
+    rpc.swept = []
     service = DepositService(
         users,
         balances,
@@ -117,7 +136,27 @@ async def test_house_deposit_credits_reserves() -> None:
 
 
 @pytest.mark.asyncio
-async def test_known_deposit_is_not_swept() -> None:
+async def test_known_house_deposit_retries_sweep() -> None:
+    service, _users, _house, _ledger, rpc, _clock = _service()
+    parsed = ParsedIncomingTransfer(
+        signature="sig-house-stuck",
+        lamports=2_000_000_000,
+        destination="House1111111111111111111111111111111111111",
+        source="s",
+        memo=None,
+    )
+    await service.credit_house(parsed)
+    rpc.swept = []
+    credited = await service.ingest_signature(
+        parsed.signature,
+        DepositWatchTarget(address=rpc.house_address, is_house=True),
+    )
+    assert credited is None
+    assert rpc.swept == ["house"]
+
+
+@pytest.mark.asyncio
+async def test_known_user_deposit_retries_sweep() -> None:
     service, users_repo, _house, _ledger, rpc, clock = _service()
     user = UserRecord(
         discord_id="1",
@@ -135,11 +174,13 @@ async def test_known_deposit_is_not_swept() -> None:
         memo=None,
     )
     await service.credit_parsed(user, parsed)
+    rpc.swept = []
     credited = await service.ingest_signature(
         parsed.signature,
         DepositWatchTarget(address=user.deposit_address or "", user_id="1"),
     )
     assert credited is None
+    assert rpc.swept == ["player-1"]
 
 
 @pytest.mark.asyncio

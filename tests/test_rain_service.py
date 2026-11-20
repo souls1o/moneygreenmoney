@@ -5,8 +5,15 @@ from decimal import Decimal
 
 import pytest
 
-from casino.domain.enums import GameStatus, LedgerEntryType, RainStatus
-from casino.domain.records import GameRecord, UserRecord
+from casino.domain.enums import (
+    GameStatus,
+    LedgerEntryType,
+    RainStatus,
+    TransactionStatus,
+    TransactionType,
+)
+from casino.domain.rain import RAIN_JOIN_STATUS, matches_rain_join_status, rain_status_texts
+from casino.domain.records import GameRecord, TransactionRecord, UserRecord
 from casino.errors import RainError, ValidationError
 from casino.services.balance_service import BalanceService
 from casino.services.ledger_service import LedgerService
@@ -59,6 +66,7 @@ class RainHarness:
             settings,  # type: ignore[arg-type]
             self.house_repo,
             self.games_repo,
+            self.tx_repo,
         )
 
     def seed_user(self, discord_id: str, sol: str = "10", currency: str = "USD") -> UserRecord:
@@ -88,6 +96,26 @@ class RainHarness:
             created_at=resolved,
             resolved_at=resolved,
         )
+
+    def seed_deposit(self, discord_id: str, lamports: int, *, hours_ago: float = 0) -> None:
+        created = self.clock.now() - timedelta(hours=hours_ago)
+        tx_id = f"dep_{discord_id}_{len(self.tx_repo.items)}"
+        self.tx_repo.items[tx_id] = TransactionRecord(
+            transaction_id=tx_id,
+            type=TransactionType.DEPOSIT,
+            status=TransactionStatus.CONFIRMED,
+            amount_lamports=lamports,
+            amount_usd=Decimal("5"),
+            user_id=discord_id,
+            created_at=created,
+        )
+
+    def qualify(self, discord_id: str, lamports: int = 50_000_000) -> None:
+        self.seed_wager(discord_id, lamports)
+        self.seed_deposit(discord_id, lamports)
+
+    async def join(self, rain_id: str, player_id: str, *, status: str = RAIN_JOIN_STATUS):
+        return await self.service.join_rain(rain_id, player_id, custom_statuses=(status,))
 
     def balance(self, discord_id: str) -> int:
         return self.users_repo.users[discord_id].sol_balance_lamports
@@ -162,32 +190,32 @@ class TestRainService:
     async def test_creator_cannot_join_and_joiners_cannot_double_join(self, harness: RainHarness) -> None:
         harness.seed_user("creator")
         harness.seed_user("p1")
-        harness.seed_wager("p1", 50_000_000)
+        harness.qualify("p1", 50_000_000)
         rain = await harness.service.create_rain(
             creator_id="creator",
             fiat_amount=Decimal("50"),
             duration_seconds=30,
         )
         with pytest.raises(RainError, match="your own rain"):
-            await harness.service.join_rain(rain.rain_id, "creator")
-        joined = await harness.service.join_rain(rain.rain_id, "p1")
+            await harness.join(rain.rain_id, "creator")
+        joined = await harness.join(rain.rain_id, "p1")
         assert joined.joiner_ids == ["p1"]
         with pytest.raises(RainError, match="already joined"):
-            await harness.service.join_rain(rain.rain_id, "p1")
+            await harness.join(rain.rain_id, "p1")
 
     @pytest.mark.asyncio
     async def test_four_joiners_split_pot_equally(self, harness: RainHarness) -> None:
         harness.seed_user("creator")
         for player_id in ("p1", "p2", "p3", "p4"):
             harness.seed_user(player_id)
-            harness.seed_wager(player_id, 100_000_000)
+            harness.qualify(player_id, 100_000_000)
         rain = await harness.service.create_rain(
             creator_id="creator",
             fiat_amount=Decimal("100"),
             duration_seconds=30,
         )
         for player_id in ("p1", "p2", "p3", "p4"):
-            await harness.service.join_rain(rain.rain_id, player_id)
+            await harness.join(rain.rain_id, player_id)
         harness.clock.advance(30)
         settled = await harness.service.settle(rain.rain_id)
         assert settled.status is RainStatus.COMPLETED
@@ -225,7 +253,7 @@ class TestRainService:
     async def test_cannot_join_or_settle_while_open(self, harness: RainHarness) -> None:
         harness.seed_user("creator")
         harness.seed_user("p1")
-        harness.seed_wager("p1", 50_000_000)
+        harness.qualify("p1", 50_000_000)
         rain = await harness.service.create_rain(
             creator_id="creator",
             fiat_amount=Decimal("50"),
@@ -235,7 +263,7 @@ class TestRainService:
             await harness.service.settle(rain.rain_id)
         harness.clock.advance(30)
         with pytest.raises(RainError, match="already ended"):
-            await harness.service.join_rain(rain.rain_id, "p1")
+            await harness.join(rain.rain_id, "p1")
 
     @pytest.mark.asyncio
     async def test_abort_refunds_unposted_rain(self, harness: RainHarness) -> None:
@@ -254,15 +282,15 @@ class TestRainService:
         harness.seed_user("creator")
         harness.seed_user("p1")
         harness.seed_user("p2")
-        harness.seed_wager("p1", 50_000_000)
-        harness.seed_wager("p2", 50_000_000)
+        harness.qualify("p1", 50_000_000)
+        harness.qualify("p2", 50_000_000)
         rain = await harness.service.create_rain(
             creator_id="creator",
             fiat_amount=Decimal("50"),
             duration_seconds=10,
         )
-        await harness.service.join_rain(rain.rain_id, "p1")
-        await harness.service.join_rain(rain.rain_id, "p2")
+        await harness.join(rain.rain_id, "p1")
+        await harness.join(rain.rain_id, "p2")
         harness.clock.advance(10)
         settled = await harness.service.settle_due()
         assert len(settled) == 1
@@ -279,13 +307,14 @@ class TestRainService:
             fiat_amount=Decimal("50"),
             duration_seconds=30,
         )
-        with pytest.raises(RainError, match="last 24 hours"):
-            await harness.service.join_rain(rain.rain_id, "p1")
+        with pytest.raises(RainError, match="wagered at least"):
+            await harness.join(rain.rain_id, "p1")
         harness.seed_wager("p1", 49_999_999)
         with pytest.raises(RainError, match=r"\$5\.00"):
-            await harness.service.join_rain(rain.rain_id, "p1")
+            await harness.join(rain.rain_id, "p1")
         harness.seed_wager("p1", 1)
-        joined = await harness.service.join_rain(rain.rain_id, "p1")
+        harness.seed_deposit("p1", 50_000_000)
+        joined = await harness.join(rain.rain_id, "p1")
         assert joined.has_joined("p1")
 
     @pytest.mark.asyncio
@@ -293,10 +322,78 @@ class TestRainService:
         harness.seed_user("creator")
         harness.seed_user("p1")
         harness.seed_wager("p1", 50_000_000, hours_ago=24.01)
+        harness.seed_deposit("p1", 50_000_000)
         rain = await harness.service.create_rain(
             creator_id="creator",
             fiat_amount=Decimal("50"),
             duration_seconds=30,
         )
-        with pytest.raises(RainError, match="last 24 hours"):
+        with pytest.raises(RainError, match="wagered at least"):
+            await harness.join(rain.rain_id, "p1")
+
+    @pytest.mark.asyncio
+    async def test_join_requires_ten_percent_deposited_in_last_day(self, harness: RainHarness) -> None:
+        harness.seed_user("creator")
+        harness.seed_user("p1")
+        harness.seed_wager("p1", 50_000_000)
+        rain = await harness.service.create_rain(
+            creator_id="creator",
+            fiat_amount=Decimal("50"),
+            duration_seconds=30,
+        )
+        with pytest.raises(RainError, match="deposited at least"):
+            await harness.join(rain.rain_id, "p1")
+        harness.seed_deposit("p1", 49_999_999)
+        with pytest.raises(RainError, match=r"\$5\.00"):
+            await harness.join(rain.rain_id, "p1")
+        harness.seed_deposit("p1", 1)
+        joined = await harness.join(rain.rain_id, "p1")
+        assert joined.has_joined("p1")
+
+    @pytest.mark.asyncio
+    async def test_join_rejects_deposit_older_than_24_hours(self, harness: RainHarness) -> None:
+        harness.seed_user("creator")
+        harness.seed_user("p1")
+        harness.seed_wager("p1", 50_000_000)
+        harness.seed_deposit("p1", 50_000_000, hours_ago=24.01)
+        rain = await harness.service.create_rain(
+            creator_id="creator",
+            fiat_amount=Decimal("50"),
+            duration_seconds=30,
+        )
+        with pytest.raises(RainError, match="deposited at least"):
+            await harness.join(rain.rain_id, "p1")
+
+    @pytest.mark.asyncio
+    async def test_join_requires_custom_status(self, harness: RainHarness) -> None:
+        harness.seed_user("creator")
+        harness.seed_user("p1")
+        harness.qualify("p1", 50_000_000)
+        rain = await harness.service.create_rain(
+            creator_id="creator",
+            fiat_amount=Decimal("50"),
+            duration_seconds=30,
+        )
+        with pytest.raises(RainError, match="custom status"):
             await harness.service.join_rain(rain.rain_id, "p1")
+        with pytest.raises(RainError, match="custom status"):
+            await harness.join(rain.rain_id, "p1", status="playing slots")
+        joined = await harness.join(rain.rain_id, "p1", status=f"  {RAIN_JOIN_STATUS}  ")
+        assert joined.has_joined("p1")
+
+
+def test_rain_join_status_matches_custom_activity() -> None:
+    assert matches_rain_join_status(RAIN_JOIN_STATUS)
+    assert matches_rain_join_status(f"  {RAIN_JOIN_STATUS}  ")
+    assert not matches_rain_join_status("playing")
+    member = type(
+        "Member",
+        (),
+        {
+            "activities": (
+                type("Activity", (), {"name": RAIN_JOIN_STATUS, "state": None})(),
+            ),
+            "activity": None,
+        },
+    )()
+    assert rain_status_texts(member) == (RAIN_JOIN_STATUS,)

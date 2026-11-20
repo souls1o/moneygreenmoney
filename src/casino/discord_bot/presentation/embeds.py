@@ -16,6 +16,7 @@ from casino.domain.affiliate import (
 from casino.domain.blackjack import BlackjackAction, BlackjackOutcome, hand_total
 from casino.domain.limbo import LIMBO_START, format_limbo_multiplier
 from casino.domain.mines import MINES_TILES, format_mines_multiplier, mines_multiplier
+from casino.domain.rain import RAIN_JOIN_STATUS
 from casino.domain.investor import InvestorPosition
 from casino.domain.enums import (
     CoinSide,
@@ -115,10 +116,10 @@ class EmbedFactory:
         return self.builder(
             "Deposits unavailable",
             description=(
-                "On-chain deposits need a house wallet and a deposit master secret. "
+                "On-chain deposits need a deposit master secret and a super wallet. "
                 "Coinflip still works with developer-credited balances. "
-                "Generate them with `python -m casino.tools.generate_house_wallet` and "
-                "`python -m casino.tools.generate_deposit_master`."
+                "Generate them with `python -m casino.tools.generate_deposit_master` and "
+                "`python -m casino.tools.generate_super_wallet`."
             ),
         ).build()
 
@@ -1085,8 +1086,8 @@ class EmbedFactory:
                 self._usd_then_sol(report.house_balance_lamports, price),
             )
             .field(
-                "House wallet",
-                self._usd_then_sol(report.house_wallet_lamports, price),
+                "Super wallet",
+                self._usd_then_sol(report.super_wallet_lamports, price),
             )
             .field(
                 "Founder book",
@@ -1246,7 +1247,9 @@ class EmbedFactory:
             .divider()
             .field(
                 "Other",
-                "`/profile` · `/tip` · `/rain` · `/affiliate`",
+                "`/profile` · `/tip` · `/rain` · `/affiliate`. "
+                "Rains require a 10% wager and 10% deposit in the last 24 hours, "
+                "plus the required custom status.",
             )
             .build()
         )
@@ -2263,7 +2266,9 @@ class EmbedFactory:
         return (
             f"{who} started a rain of **{pot}**. **{joiners}** joined so far. "
             "Click Join for an equal share when the timer ends. "
-            "You must have wagered at least **10% of this rain** in the last 24 hours to join."
+            "To join you must have **wagered** and **deposited** at least **10% of this rain** "
+            "in the last 24 hours, and your Discord custom status must be "
+            f"`{RAIN_JOIN_STATUS}`."
         )
 
     def _rain_share_fiat(self, rain: RainRecord) -> Decimal | None:

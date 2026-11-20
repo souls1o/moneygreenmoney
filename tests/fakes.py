@@ -5,7 +5,16 @@ from datetime import datetime
 from decimal import Decimal
 
 from casino.domain.blackjack import BlackjackHand
-from casino.domain.enums import CoinSide, GameStatus, JackpotStatus, RainStatus, TicketStatus, UserRole
+from casino.domain.enums import (
+    CoinSide,
+    GameStatus,
+    JackpotStatus,
+    RainStatus,
+    TicketStatus,
+    TransactionStatus,
+    TransactionType,
+    UserRole,
+)
 from casino.domain.records import (
     HOUSE_USER_ID,
     GameRecord,
@@ -48,9 +57,6 @@ class MemoryUserRepository:
             for user in self.users.values()
             if user.deposit_address
         ]
-
-    async def list_positive_balances(self, session=None) -> list[UserRecord]:
-        return [self._clone(user) for user in self.users.values() if user.sol_balance_lamports > 0]
 
     async def insert(self, user: UserRecord, session=None) -> None:
         self.users[user.discord_id] = user
@@ -540,6 +546,20 @@ class MemoryTransactionRepository:
 
     async def find_by_id(self, transaction_id: str, session=None) -> TransactionRecord | None:
         return self.items.get(transaction_id)
+
+    async def sum_player_deposited_since(self, discord_id: str, since: datetime) -> int:
+        total = 0
+        for transaction in self.items.values():
+            if transaction.user_id != discord_id:
+                continue
+            if transaction.type is not TransactionType.DEPOSIT:
+                continue
+            if transaction.status is not TransactionStatus.CONFIRMED:
+                continue
+            if transaction.created_at is None or transaction.created_at < since:
+                continue
+            total += int(transaction.amount_lamports)
+        return total
 
     async def attach_signature(self, transaction_id: str, signature: str, session=None) -> None:
         transaction = self.items.get(transaction_id)

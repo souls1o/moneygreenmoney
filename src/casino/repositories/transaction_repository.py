@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from motor.motor_asyncio import AsyncIOMotorClientSession
 from pymongo.errors import DuplicateKeyError
 
 from casino.db.mongo import COLLECTION_TRANSACTIONS
+from casino.domain.enums import TransactionStatus, TransactionType
 from casino.domain.records import TransactionRecord
 from casino.errors import AlreadyProcessedError
 from casino.repositories.base import MongoRepository
@@ -36,6 +39,24 @@ class TransactionRepository(MongoRepository):
     ) -> TransactionRecord | None:
         document = await self.collection.find_one({"transactionId": transaction_id}, session=session)
         return self._mapper.transaction_from_document(document) if document else None
+
+    async def sum_player_deposited_since(self, discord_id: str, since: datetime) -> int:
+        pipeline = [
+            {
+                "$match": {
+                    "userId": discord_id,
+                    "type": TransactionType.DEPOSIT.value,
+                    "status": TransactionStatus.CONFIRMED.value,
+                    "createdAt": {"$gte": since},
+                }
+            },
+            {"$group": {"_id": None, "total": {"$sum": "$amountLamports"}}},
+        ]
+        cursor = await self.collection.aggregate(pipeline)
+        docs = await cursor.to_list(length=1)
+        if not docs:
+            return 0
+        return int(docs[0].get("total") or 0)
 
     async def attach_signature(
         self,

@@ -11,7 +11,7 @@ def main() -> None:
     print_wallet(
         title="House deposit address:",
         env_name="SOLANA_PRIVATE_KEY",
-        purpose="House wallet. Holds house funds and pays player wins.",
+        purpose="SOL sent here credits house reserves, then sweeps into the super wallet.",
     )
 
 

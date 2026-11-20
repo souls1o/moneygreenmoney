@@ -54,12 +54,6 @@ class UserRepository(MongoRepository):
                 wallets.append((str(discord_id), str(address)))
         return wallets
 
-    async def list_positive_balances(
-        self, session: AsyncIOMotorClientSession | None = None
-    ) -> list[UserRecord]:
-        cursor = self.collection.find({"solBalanceLamports": {"$gt": 0}}, session=session)
-        return [self._mapper.user_from_document(document) async for document in cursor]
-
     async def insert(self, user: UserRecord, session: AsyncIOMotorClientSession | None = None) -> None:
         await self.collection.insert_one(self._mapper.user_to_document(user), session=session)
 

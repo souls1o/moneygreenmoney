@@ -14,7 +14,7 @@ from casino.services.ledger_service import LedgerService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.solana_client.addresses import SolanaAddressValidator
-from casino.solana_client.rpc import SolanaRpcGateway
+from casino.solana_client.rpc import SWEEP_FEE_LAMPORTS, SolanaRpcGateway
 from casino.utils.money import SolAmount, subtract_transfer_fee, transfer_fee
 
 
@@ -27,7 +27,7 @@ class WithdrawalResult:
 
 
 class WithdrawalService:
-    """Debits the player, then pays SOL from their deposit wallet."""
+    """Debits the player, then pays SOL from the super wallet."""
 
     def __init__(
         self,
@@ -59,8 +59,8 @@ class WithdrawalService:
     def ensure_enabled(self) -> None:
         if not self._settings.enable_withdrawals:
             raise FeatureDisabledError("Withdrawals are not enabled yet.")
-        if not self._rpc.is_configured:
-            raise ConfigurationError("Withdrawals need SOLANA_PRIVATE_KEY and DEPOSIT_MASTER_SECRET.")
+        if not self._rpc.super_address:
+            raise ConfigurationError("Withdrawals need SUPER_WALLET_PRIVATE_KEY.")
 
     async def request(self, discord_id: str, amount: SolAmount, destination: str) -> WithdrawalResult:
         self.ensure_enabled()
@@ -71,7 +71,7 @@ class WithdrawalService:
         if not wallet_raw:
             raise ValidationError("Enter a destination wallet.")
         wallet = self._addresses.parse(wallet_raw)
-        if wallet == self._rpc.house_address:
+        if wallet == self._rpc.super_address:
             raise ValidationError("Choose a different destination wallet.")
 
         ledger_balance = await self._ledger.signed_balance_lamports(discord_id)
@@ -82,13 +82,14 @@ class WithdrawalService:
         if payout.is_zero():
             raise ValidationError("Enter a withdrawal amount greater than zero.")
 
-        deposit_address = self._rpc.player_address(discord_id)
-        if wallet == deposit_address:
-            raise ValidationError("Choose a different destination wallet.")
-        spendable = await self._rpc.spendable_lamports(deposit_address)
-        if amount.lamports > spendable:
+        await self._rpc.collect_user_into_super(discord_id)
+        await self._rpc.collect_house_into_super()
+        super_balance = await self._rpc.get_balance(self._rpc.super_address)
+        rent = await self._rpc.get_rent_exempt_lamports()
+        needed = payout.lamports + SWEEP_FEE_LAMPORTS + rent
+        if super_balance < needed:
             raise WithdrawalError(
-                "Your deposit wallet does not have enough on-chain SOL to send this withdrawal."
+                "The house wallet does not have enough on-chain SOL to pay this withdrawal right now."
             )
 
         quote = await self._prices.get_quote(allow_stale=True)
@@ -106,13 +107,7 @@ class WithdrawalService:
                     session=uow.session,
                 )
             try:
-                extra: list[tuple[str, SolAmount]] = []
-                fee = transfer_fee(amount)
-                if not fee.is_zero() and self._rpc.house_address:
-                    extra.append((self._rpc.house_address, fee))
-                signature = await self._rpc.send_from_player(
-                    discord_id, wallet, payout, extra_legs=extra or None
-                )
+                signature = await self._rpc.send_from_super(wallet, payout)
             except Exception as exc:
                 self._logger.exception(
                     "withdrawal_send_failed",
@@ -183,7 +178,7 @@ def _user_send_error(exc: BaseException) -> str:
     if "blockhash" in detail:
         return "Solana rejected the transaction. Your balance was refunded. Try again."
     if "insufficient" in detail or "no record of a prior credit" in detail:
-        return "Your deposit wallet could not send this withdrawal. Your balance was refunded."
+        return "The house wallet could not pay this withdrawal. Your balance was refunded."
     if "rate" in detail or "too many" in detail or "forbidden" in detail or "method not found" in detail:
         return "The Solana RPC could not send the withdrawal. Your balance was refunded."
     return "The withdrawal could not be sent. Your balance was refunded."

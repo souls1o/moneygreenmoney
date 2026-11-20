@@ -16,7 +16,6 @@ from casino.errors import JackpotError, NotFoundError
 from casino.logging.logger import LogContext, get_logger
 from casino.repositories.jackpot_repository import JackpotRepository
 from casino.services.balance_service import BalanceService
-from casino.services.custody_service import CustodyService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.services.validation_service import ValidationService
@@ -42,7 +41,6 @@ class JackpotService:
         unit_of_work: UnitOfWorkFactory,
         settings: Settings,
         house_repository,
-        custody: CustodyService | None = None,
     ) -> None:
         self._jackpots = jackpot_repository
         self._users = user_service
@@ -57,7 +55,6 @@ class JackpotService:
         self._uow = unit_of_work
         self._settings = settings
         self._house = house_repository
-        self._custody = custody or CustodyService()
         self._logger = get_logger("casino.jackpot")
 
     async def get(self, jackpot_id: str) -> JackpotRecord:
@@ -261,7 +258,6 @@ class JackpotService:
                 replaced = await self._jackpots.replace(current, session=uow.session)
                 if not replaced:
                     raise JackpotError("The jackpot could not be settled.")
-            await self._custody.settle_jackpot(current)
             self._logger.info(
                 "jackpot_settled",
                 status=current.status.value,

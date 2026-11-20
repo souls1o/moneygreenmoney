@@ -36,6 +36,7 @@ class CasinoBot(commands.Bot):
         intents.guilds = True
         intents.members = True
         intents.message_content = True
+        intents.presences = True
         super().__init__(command_prefix="!", intents=intents)
         self.tree.allowed_installs = app_commands.AppInstallationType(guild=True, user=False)
         self.tree.allowed_contexts = app_commands.AppCommandContext(

@@ -27,8 +27,8 @@ class Settings(BaseSettings):
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
     solana_commitment: str = "confirmed"
     solana_private_key: SecretStr | None = None
-    deposit_master_secret: SecretStr | None = None
     super_wallet_private_key: SecretStr | None = None
+    deposit_master_secret: SecretStr | None = None
 
     coingecko_base_url: str = "https://api.coingecko.com/api/v3"
     price_cache_ttl_seconds: int = Field(default=45, ge=5, le=300)
@@ -65,8 +65,8 @@ class Settings(BaseSettings):
 
     @field_validator(
         "solana_private_key",
-        "deposit_master_secret",
         "super_wallet_private_key",
+        "deposit_master_secret",
         mode="before",
     )
     @classmethod
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
 
     @property
     def has_solana_wallet(self) -> bool:
-        return self.solana_private_key is not None and self.deposit_master_secret is not None
+        return self.super_wallet_private_key is not None and self.deposit_master_secret is not None
 
     @model_validator(mode="after")
     def validate_currency_support(self) -> Self:

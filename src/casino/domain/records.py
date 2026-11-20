@@ -714,7 +714,7 @@ class TimeframeStats:
 @dataclass(frozen=True, slots=True)
 class HouseStatsReport:
     house_balance_lamports: int
-    house_wallet_lamports: int
+    super_wallet_lamports: int
     lifetime_fees_lamports: int
     open_tables: int
     sol_price_usd: Decimal

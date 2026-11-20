@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from casino.solana_client.rpc import RENT_EXEMPT_FALLBACK_LAMPORTS, SWEEP_FEE_LAMPORTS
-from pydantic import SecretStr
-
-from casino.tools.migrate_super_wallet import _super_wallet_secret, build_plan, house_book_gap
+from casino.tools.migrate_super_wallet import build_plan
 
 
 def test_plan_splits_players_then_house_and_counts_fees() -> None:
@@ -18,43 +16,8 @@ def test_plan_splits_players_then_house_and_counts_fees() -> None:
     )
     assert [leg.kind for leg in plan.legs] == ["player", "player", "house"]
     assert plan.player_total == 3_000_000_000
-    assert plan.send_total == 6_000_000_000
     assert plan.needed == 6_000_000_000 + 3 * SWEEP_FEE_LAMPORTS
     assert plan.blockers == ()
-
-
-def test_plan_skips_funds_already_on_destination_wallets() -> None:
-    plan = build_plan(
-        super_address="Super111",
-        house_address="House111",
-        super_balance=2_000_000_000,
-        rent=RENT_EXEMPT_FALLBACK_LAMPORTS,
-        fee=SWEEP_FEE_LAMPORTS,
-        house_book=3_000_000_000,
-        house_on_chain=2_700_000_000,
-        players=[("1", "Depo1", 1_000_000_000)],
-        player_on_chain={"1": 400_000_000},
-    )
-    assert [leg.kind for leg in plan.legs] == ["player", "house"]
-    assert plan.legs[0].lamports == 600_000_000
-    assert plan.legs[1].lamports == 300_000_000
-    assert plan.blockers == ()
-
-
-def test_plan_sends_house_remainder_instead_of_blocking() -> None:
-    plan = build_plan(
-        super_address="Super111",
-        house_address="House111",
-        super_balance=1_000_000_000,
-        rent=RENT_EXEMPT_FALLBACK_LAMPORTS,
-        fee=SWEEP_FEE_LAMPORTS,
-        house_book=5_000_000_000,
-        players=[],
-    )
-    assert plan.blockers == ()
-    assert plan.legs[0].kind == "house"
-    assert plan.legs[0].lamports < 5_000_000_000
-    assert plan.notes
 
 
 def test_plan_blocks_when_super_is_short_or_tables_are_open() -> None:
@@ -64,8 +27,8 @@ def test_plan_blocks_when_super_is_short_or_tables_are_open() -> None:
         super_balance=1_000_000,
         rent=RENT_EXEMPT_FALLBACK_LAMPORTS,
         fee=SWEEP_FEE_LAMPORTS,
-        house_book=0,
-        players=[("1", "Depo1", 5_000_000_000)],
+        house_book=5_000_000_000,
+        players=[],
     )
     assert short.blockers
     open_tables = build_plan(
@@ -91,16 +54,3 @@ def test_plan_blocks_when_super_is_short_or_tables_are_open() -> None:
         force=True,
     )
     assert forced.blockers == ()
-
-
-def test_house_book_gap_only_writes_down() -> None:
-    assert house_book_gap(6_495_313_117, 6_206_839_455) == 288_473_662
-    assert house_book_gap(1_000, 1_000) == 0
-    assert house_book_gap(500, 800) == 0
-
-
-def test_super_wallet_secret_reads_settings_field() -> None:
-    class _Settings:
-        super_wallet_private_key = SecretStr("super-secret")
-
-    assert _super_wallet_secret(_Settings()) == "super-secret"  # type: ignore[arg-type]

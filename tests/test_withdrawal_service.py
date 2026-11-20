@@ -12,7 +12,7 @@ from casino.services.ledger_service import LedgerService
 from casino.services.user_service import UserService
 from casino.services.withdrawal_service import WithdrawalService
 from casino.solana_client.addresses import SolanaAddressValidator
-from casino.solana_client.rpc import RENT_EXEMPT_FALLBACK_LAMPORTS, SWEEP_FEE_LAMPORTS, sweepable_lamports
+from casino.solana_client.rpc import RENT_EXEMPT_FALLBACK_LAMPORTS, SWEEP_FEE_LAMPORTS
 from casino.utils.identifiers import IdentifierFactory
 from casino.utils.money import SolAmount
 from tests.conftest import FrozenClock, StubPriceService, StubSettings
@@ -28,9 +28,7 @@ DESTINATION = "So11111111111111111111111111111111111111112"
 
 
 class StubRpc:
-    is_configured = True
-    has_house_wallet = True
-    house_address = "House11111111111111111111111111111111112"
+    super_address = "Super11111111111111111111111111111111112"
     balance = 10_000_000_000
     sent: list[tuple[str, int]] = []
     fail = False
@@ -41,32 +39,16 @@ class StubRpc:
     async def get_rent_exempt_lamports(self, data_len: int = 0) -> int:
         return RENT_EXEMPT_FALLBACK_LAMPORTS
 
-    async def spendable_lamports(self, address: str) -> int:
-        return sweepable_lamports(self.balance, RENT_EXEMPT_FALLBACK_LAMPORTS)
+    swept_users: list[str] = []
 
-    def player_address(self, discord_id: str) -> str:
-        return f"Depo{discord_id}111111111111111111111111111111111"
+    async def collect_house_into_super(self) -> str | None:
+        return None
 
-    async def send_from_player(
-        self,
-        discord_id: str,
-        destination: str,
-        amount: SolAmount,
-        extra_legs: list[tuple[str, SolAmount]] | None = None,
-    ) -> str:
-        if self.fail:
-            raise RuntimeError("rpc down")
-        self.sent.append((destination, amount.lamports))
-        for dest, extra in extra_legs or []:
-            self.sent.append((dest, extra.lamports))
-        return "withdraw-sig"
+    async def collect_user_into_super(self, discord_id: str) -> str | None:
+        self.swept_users.append(discord_id)
+        return None
 
-    async def send_from_house(
-        self,
-        destination: str,
-        amount: SolAmount,
-        extra_legs: list[tuple[str, SolAmount]] | None = None,
-    ) -> str:
+    async def send_from_super(self, destination: str, amount: SolAmount) -> str:
         if self.fail:
             raise RuntimeError("rpc down")
         self.sent.append((destination, amount.lamports))
@@ -94,6 +76,7 @@ def _service(*, enabled: bool = True):
     )
     rpc = StubRpc()
     rpc.sent = []
+    rpc.swept_users = []
     rpc.fail = False
     rpc.balance = 10_000_000_000
     service = WithdrawalService(
@@ -155,7 +138,7 @@ async def test_withdrawal_requires_wallet() -> None:
 
 
 @pytest.mark.asyncio
-async def test_withdrawal_sends_from_deposit_wallet_and_debits() -> None:
+async def test_withdrawal_sends_from_super_and_debits() -> None:
     service, users_repo, ledger_repo, tx_repo, rpc, clock, house_repo = _service()
     _user(users_repo, clock)
     _seed_ledger(ledger_repo, clock, lamports=1_000_000_000)
@@ -171,7 +154,8 @@ async def test_withdrawal_sends_from_deposit_wallet_and_debits() -> None:
     assert result.amount.lamports == 247_500_000
     assert users_repo.users["1"].sol_balance_lamports == 750_000_000
     assert users_repo.users["1"].total_withdrawn_lamports == 250_000_000
-    assert rpc.sent == [(DESTINATION, 247_500_000), (rpc.house_address, 2_500_000)]
+    assert rpc.sent == [(DESTINATION, 247_500_000)]
+    assert rpc.swept_users == ["1"]
     assert seen == [("1", "withdraw-sig")]
     assert house_repo.record.sol_balance_lamports == 2_500_000
     assert house_repo.record.total_fees_collected_lamports == 0
@@ -209,24 +193,24 @@ async def test_withdrawal_rejects_more_than_balance() -> None:
 
 
 @pytest.mark.asyncio
-async def test_withdrawal_rejects_when_deposit_wallet_is_short() -> None:
+async def test_withdrawal_rejects_when_super_wallet_is_short() -> None:
     service, users_repo, ledger_repo, _tx, rpc, clock, _house = _service()
     _user(users_repo, clock)
     _seed_ledger(ledger_repo, clock, lamports=1_000_000_000)
     rpc.balance = SWEEP_FEE_LAMPORTS + RENT_EXEMPT_FALLBACK_LAMPORTS
-    with pytest.raises(WithdrawalError, match="deposit wallet"):
+    with pytest.raises(WithdrawalError, match="house wallet"):
         await service.request("1", SolAmount.parse("0.25"), DESTINATION)
     assert users_repo.users["1"].sol_balance_lamports == 1_000_000_000
 
 
 @pytest.mark.asyncio
-async def test_withdrawal_keeps_deposit_wallet_rent_exempt() -> None:
+async def test_withdrawal_keeps_super_wallet_rent_exempt() -> None:
     service, users_repo, ledger_repo, _tx, rpc, clock, _house = _service()
     _user(users_repo, clock)
     _seed_ledger(ledger_repo, clock, lamports=1_000_000_000)
     amount = SolAmount.parse("0.04533")
     rpc.balance = amount.lamports + SWEEP_FEE_LAMPORTS + 3_248
-    with pytest.raises(WithdrawalError, match="deposit wallet"):
+    with pytest.raises(WithdrawalError, match="house wallet"):
         await service.request("1", amount, DESTINATION)
     assert rpc.sent == []
     assert users_repo.users["1"].sol_balance_lamports == 1_000_000_000

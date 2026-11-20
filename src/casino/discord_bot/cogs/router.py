@@ -21,6 +21,7 @@ from casino.discord_bot.presentation.modals import (
     WithdrawModal,
 )
 from casino.domain.enums import CoinSide, GameStatus, TicketCategory
+from casino.domain.rain import rain_status_texts
 from casino.errors import AppError
 from casino.logging.logger import LogContext, get_logger
 
@@ -407,7 +408,16 @@ class ComponentRouterCog(commands.Cog):
     async def _on_rain_join(self, interaction: discord.Interaction, rain_id: str) -> None:
         await interaction.response.defer(ephemeral=True)
         with LogContext.bind(userId=str(interaction.user.id), rainId=rain_id):
-            rain = await self._container.rains.join_rain(rain_id, str(interaction.user.id))
+            member = interaction.user
+            if interaction.guild is not None:
+                cached = interaction.guild.get_member(interaction.user.id)
+                if cached is not None:
+                    member = cached
+            rain = await self._container.rains.join_rain(
+                rain_id,
+                str(interaction.user.id),
+                custom_statuses=rain_status_texts(member),
+            )
             await self._rains().on_joined(rain)
             await interaction.followup.send(
                 **self._embeds.success(

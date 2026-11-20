@@ -67,6 +67,7 @@ class SolanaRpcGateway:
         self._transfers = transfers or SolanaTransferBuilder()
         self._client: AsyncClient | None = None
         self._house_keypair: Keypair | None = None
+        self._super_keypair: Keypair | None = None
         self._deposit_wallets: DepositWalletDeriver | None = None
         self._logger = get_logger("casino.solana")
 
@@ -81,7 +82,7 @@ class SolanaRpcGateway:
 
     @property
     def is_configured(self) -> bool:
-        return self._house_keypair is not None and self._deposit_wallets is not None
+        return self._super_keypair is not None and self._deposit_wallets is not None
 
     @property
     def has_house_wallet(self) -> bool:
@@ -98,9 +99,17 @@ class SolanaRpcGateway:
         return str(self._house_keypair.pubkey())
 
     @property
+    def super_address(self) -> str | None:
+        if self._super_keypair is None:
+            return None
+        return str(self._super_keypair.pubkey())
+
+    @property
     def keypair(self) -> Keypair:
+        if self._super_keypair is not None:
+            return self._super_keypair
         if self._house_keypair is None:
-            raise RuntimeError("House wallet is not configured.")
+            raise RuntimeError("Solana keypair is not loaded.")
         return self._house_keypair
 
     @property
@@ -123,17 +132,20 @@ class SolanaRpcGateway:
 
     async def connect(self) -> None:
         house_secret = self._settings.solana_private_key
+        super_secret = self._settings.super_wallet_private_key
         master_secret = self._settings.deposit_master_secret
         if house_secret is not None:
             self._house_keypair = self._keypair_loader.load(house_secret.get_secret_value())
+        if super_secret is not None:
+            self._super_keypair = self._keypair_loader.load(super_secret.get_secret_value())
         if master_secret is not None:
             self._deposit_wallets = DepositWalletDeriver(normalize_secret(master_secret.get_secret_value()))
-        if self._house_keypair is None and self._deposit_wallets is None:
+        if self._house_keypair is None and self._super_keypair is None and self._deposit_wallets is None:
             self._logger.warning(
                 "solana_wallet_unconfigured",
                 detail=(
-                    "Set SOLANA_PRIVATE_KEY for the house wallet and DEPOSIT_MASTER_SECRET "
-                    "for player deposit addresses."
+                    "Set DEPOSIT_MASTER_SECRET and SUPER_WALLET_PRIVATE_KEY for player deposits. "
+                    "SOLANA_PRIVATE_KEY is only the house deposit address."
                 ),
             )
             return
@@ -143,6 +155,7 @@ class SolanaRpcGateway:
             "solana_connected",
             rpc=self._settings.solana_rpc_url,
             houseAddress=self.house_address,
+            superAddress=self.super_address,
             depositsConfigured=self.is_configured,
             connected=ready,
         )
@@ -175,7 +188,7 @@ class SolanaRpcGateway:
         before: str | None = None,
         limit: int = 25,
     ) -> list[str]:
-        target = address or self.house_address
+        target = address or self.house_address or self.super_address
         if not target:
             return []
         until_sig = Signature.from_string(until) if until else None
@@ -217,94 +230,67 @@ class SolanaRpcGateway:
         response = await self.client.send_transaction(transaction, opts=opts)
         return str(response.value)
 
-    def player_address(self, discord_id: str) -> str:
-        return str(self.player_keypair(discord_id).pubkey())
+    async def collect_house_into_super(self) -> str | None:
+        if not self.has_house_wallet or self._super_keypair is None:
+            return None
+        try:
+            return await self.sweep_to_super(self.house_keypair())
+        except Exception:
+            self._logger.exception("house_sweep_failed")
+            return None
 
-    async def spendable_lamports(self, address: str) -> int:
-        balance = await self.get_balance(address)
+    async def collect_user_into_super(self, discord_id: str) -> str | None:
+        if self._deposit_wallets is None or self._super_keypair is None:
+            return None
+        try:
+            return await self.sweep_to_super(self.player_keypair(discord_id))
+        except Exception:
+            self._logger.exception("deposit_sweep_failed", userId=discord_id)
+            return None
+
+    async def sweep_to_super(self, source: Keypair) -> str | None:
+        if self._super_keypair is None:
+            return None
+        if source.pubkey() == self._super_keypair.pubkey():
+            return None
+        balance = await self.get_balance(str(source.pubkey()))
         rent = await self.get_rent_exempt_lamports()
-        return sweepable_lamports(balance, rent)
-
-    async def player_to_house(self, discord_id: str, amount: SolAmount) -> str:
-        if not self.house_address:
-            raise RuntimeError("House wallet is not configured.")
-        return await self.send_from_player(discord_id, self.house_address, amount)
-
-    async def house_to_player(self, discord_id: str, amount: SolAmount) -> str:
-        return await self.send_from_house(self.player_address(discord_id), amount)
-
-    async def player_to_player(self, source_id: str, dest_id: str, amount: SolAmount) -> str:
-        return await self.send_from_player(source_id, self.player_address(dest_id), amount)
-
-    async def send_from_player(
-        self,
-        discord_id: str,
-        destination: str,
-        amount: SolAmount,
-        extra_legs: list[tuple[str, SolAmount]] | None = None,
-    ) -> str:
-        return await self._send_from(
-            self.player_keypair(discord_id),
-            destination,
-            amount,
-            extra_legs=extra_legs,
-            kind="player",
+        amount_lamports = sweepable_lamports(balance, rent)
+        if amount_lamports <= 0:
+            return None
+        amount = SolAmount.from_lamports(amount_lamports)
+        transaction = self._transfers.build(
+            payer=source,
+            recent_blockhash=await self.get_latest_blockhash(),
+            legs=[TransferLeg(destination=self._super_keypair.pubkey(), amount=amount)],
         )
-
-    async def send_from_house(
-        self,
-        destination: str,
-        amount: SolAmount,
-        extra_legs: list[tuple[str, SolAmount]] | None = None,
-    ) -> str:
-        return await self._send_from(
-            self.house_keypair(),
-            destination,
-            amount,
-            extra_legs=extra_legs,
-            kind="house",
+        signature = await self.send_transaction(transaction)
+        self._logger.info(
+            "deposit_swept",
+            source=str(source.pubkey()),
+            destination=self.super_address,
+            amountLamports=amount.lamports,
+            txSignature=signature,
         )
+        return signature
 
-    async def send_from_keypair(
-        self,
-        source: Keypair,
-        destination: str,
-        amount: SolAmount,
-        extra_legs: list[tuple[str, SolAmount]] | None = None,
-    ) -> str:
-        return await self._send_from(source, destination, amount, extra_legs=extra_legs, kind="migrate")
-
-    async def _send_from(
-        self,
-        source: Keypair,
-        destination: str,
-        amount: SolAmount,
-        *,
-        extra_legs: list[tuple[str, SolAmount]] | None = None,
-        kind: str,
-    ) -> str:
+    async def send_from_super(self, destination: str, amount: SolAmount) -> str:
+        if self._super_keypair is None:
+            raise RuntimeError("Super wallet is not configured.")
         dest = Pubkey.from_string(destination)
-        if dest == source.pubkey():
-            raise ValueError("Cannot send SOL to the same wallet.")
-        legs = [TransferLeg(destination=dest, amount=amount)]
-        for extra_dest, extra_amount in extra_legs or []:
-            extra_pub = Pubkey.from_string(extra_dest)
-            if extra_pub == source.pubkey() or extra_amount.is_zero():
-                continue
-            legs.append(TransferLeg(destination=extra_pub, amount=extra_amount))
+        if dest == self._super_keypair.pubkey():
+            raise ValueError("Cannot withdraw to the custody wallet.")
         last_error: Exception | None = None
         for attempt in range(3):
             try:
                 transaction = self._transfers.build(
-                    payer=source,
+                    payer=self._super_keypair,
                     recent_blockhash=await self.get_latest_blockhash(),
-                    legs=legs,
+                    legs=[TransferLeg(destination=dest, amount=amount)],
                 )
                 signature = await self.send_transaction(transaction)
                 self._logger.info(
-                    "sol_sent",
-                    kind=kind,
-                    source=str(source.pubkey()),
+                    "withdrawal_sent",
                     destination=destination,
                     amountLamports=amount.lamports,
                     txSignature=signature,
@@ -314,8 +300,7 @@ class SolanaRpcGateway:
             except Exception as exc:
                 last_error = exc
                 self._logger.warning(
-                    "sol_send_retry",
-                    kind=kind,
+                    "withdrawal_send_retry",
                     attempt=attempt + 1,
                     error=str(exc),
                 )

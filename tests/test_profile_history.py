@@ -439,6 +439,10 @@ def test_howto_covers_games_fees_and_affiliate() -> None:
     assert "$0.01" in text
     assert "/affiliate" in text
     assert "5–10%" in text or "5-10%" in text
+    assert "/rain" in text
+    assert "10% wager" in text
+    assert "10% deposit" in text
+    assert "custom status" in text
 
 
 def _panel_text(panel) -> str:
