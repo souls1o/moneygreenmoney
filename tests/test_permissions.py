@@ -7,7 +7,11 @@ from casino.services.permission_service import PermissionService
 
 
 def test_developer_user_id_is_admin() -> None:
-    settings = SimpleNamespace(developer_user_id=1200, admin_role_id_set=lambda: frozenset({9}))
+    settings = SimpleNamespace(
+        developer_user_id=1200,
+        admin_role_id_set=lambda: frozenset({9}),
+        house_stats_role_id_set=lambda: frozenset({7}),
+    )
     permissions = PermissionService(settings)  # type: ignore[arg-type]
     assert permissions.is_admin(1200, [])
     assert not permissions.is_admin(1, [])
@@ -15,7 +19,26 @@ def test_developer_user_id_is_admin() -> None:
 
 
 def test_require_admin_rejects_everyone_else() -> None:
-    settings = SimpleNamespace(developer_user_id=1200, admin_role_id_set=lambda: frozenset())
+    settings = SimpleNamespace(
+        developer_user_id=1200,
+        admin_role_id_set=lambda: frozenset(),
+        house_stats_role_id_set=lambda: frozenset(),
+    )
     permissions = PermissionService(settings)  # type: ignore[arg-type]
     with pytest.raises(PermissionDeniedError):
         permissions.require_admin(1, [])
+
+
+def test_house_stats_role_can_view_but_is_not_admin() -> None:
+    settings = SimpleNamespace(
+        developer_user_id=1200,
+        admin_role_id_set=lambda: frozenset({9}),
+        house_stats_role_id_set=lambda: frozenset({1572774853726044210}),
+    )
+    permissions = PermissionService(settings)  # type: ignore[arg-type]
+    viewer = 1572774853726044210
+    assert permissions.can_view_house_stats(1, [viewer])
+    assert not permissions.is_admin(1, [viewer])
+    permissions.require_house_stats_viewer(1, [viewer])
+    with pytest.raises(PermissionDeniedError):
+        permissions.require_house_stats_viewer(1, [])

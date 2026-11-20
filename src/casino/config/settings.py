@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     discord_guild_id: int | None = None
     developer_user_id: int | None = None
     admin_role_ids: str = ""
+    house_stats_role_ids: str = "1572774853726044210"
 
     mongodb_uri: SecretStr
     mongodb_database: str = "betbetbet"
@@ -115,6 +116,9 @@ class Settings(BaseSettings):
 
     def admin_role_id_set(self) -> frozenset[int]:
         return self.parse_id_set(self.admin_role_ids)
+
+    def house_stats_role_id_set(self) -> frozenset[int]:
+        return self.parse_id_set(self.house_stats_role_ids)
 
     @staticmethod
     def parse_id_set(raw: str) -> frozenset[int]:

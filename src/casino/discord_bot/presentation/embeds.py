@@ -1077,7 +1077,7 @@ class EmbedFactory:
             .build()
         )
 
-    def house_stats(self, report: HouseStatsReport) -> CasinoPanel:
+    def house_stats(self, report: HouseStatsReport, *, actions: bool = True) -> CasinoPanel:
         price = report.sol_price_usd
         builder = (
             self.builder("House stats")
@@ -1101,16 +1101,17 @@ class EmbedFactory:
         builder.divider()
         for window in report.timeframes:
             builder.field(window.label, self._timeframe_body(window, price)).divider()
-        builder.button(
-            "Deposit",
-            style=discord.ButtonStyle.success,
-            callback=self._on_house_deposit,
-        )
-        builder.button(
-            "Withdraw",
-            style=discord.ButtonStyle.secondary,
-            callback=self._on_house_withdraw,
-        )
+        if actions:
+            builder.button(
+                "Deposit",
+                style=discord.ButtonStyle.success,
+                callback=self._on_house_deposit,
+            )
+            builder.button(
+                "Withdraw",
+                style=discord.ButtonStyle.secondary,
+                callback=self._on_house_withdraw,
+            )
         return builder.build()
 
     async def _on_house_deposit(self, interaction: discord.Interaction) -> None:
@@ -1155,9 +1156,12 @@ class EmbedFactory:
             await interaction.response.send_message(**kwargs)
 
     def _require_house_stats_admin(self, interaction: discord.Interaction) -> None:
+        member = interaction.user
+        if isinstance(member, discord.Member) and member.guild_permissions.administrator:
+            return
         self._container.permissions.require_admin(
-            interaction.user.id,
-            [role.id for role in interaction.user.roles] if isinstance(interaction.user, discord.Member) else [],
+            member.id,
+            [role.id for role in member.roles] if isinstance(member, discord.Member) else [],
         )
 
     def house_deposit(self) -> CasinoPanel:

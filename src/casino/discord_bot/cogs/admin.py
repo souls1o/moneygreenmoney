@@ -35,6 +35,12 @@ class AdminCog(commands.Cog):
     async def _guard(self, interaction: discord.Interaction) -> None:
         self._container.permissions.require_admin(interaction.user.id, self._role_ids(interaction))
 
+    def _can_manage_house(self, interaction: discord.Interaction, role_ids: list[int]) -> bool:
+        member = interaction.user
+        if isinstance(member, discord.Member) and member.guild_permissions.administrator:
+            return True
+        return self._container.permissions.is_admin(member.id, role_ids)
+
     @admin.command(name="credit", description="Credit SOL to a player")
     @app_commands.describe(member="Player", amount_sol="SOL amount", reason="Ledger reason")
     async def credit(
@@ -114,13 +120,18 @@ class AdminCog(commands.Cog):
         )
 
     @app_commands.command(name="housestats", description="Show house balance, super wallet, and timeframe stats")
-    @app_commands.default_permissions(administrator=True)
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def housestats(self, interaction: discord.Interaction) -> None:
-        await self._guard(interaction)
+        role_ids = self._role_ids(interaction)
+        self._container.permissions.require_house_stats_viewer(interaction.user.id, role_ids)
         report = await self._container.house_stats.snapshot()
-        await interaction.response.send_message(**self._embeds.house_stats(report).send_kwargs(ephemeral=True))
+        await interaction.response.send_message(
+            **self._embeds.house_stats(
+                report,
+                actions=self._can_manage_house(interaction, role_ids),
+            ).send_kwargs(ephemeral=True)
+        )
 
     @app_commands.command(name="reset_housestats", description="Reset house stats windows and lifetime fees")
     @app_commands.default_permissions(administrator=True)
