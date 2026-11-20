@@ -203,7 +203,9 @@ class ContainerFactory:
         )
         guild_configs = GuildConfigService(guild_config_repo, clock)
         verification = VerificationService(clock)
-        house_stats = HouseStatsService(games_repo, house_repo, price, clock, solana)
+        house_stats = HouseStatsService(
+            games_repo, house_repo, price, clock, solana, jackpot_repository=jackpots_repo
+        )
         investors = InvestorService(
             users,
             users_repo,

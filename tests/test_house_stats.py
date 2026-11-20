@@ -5,8 +5,8 @@ from decimal import Decimal
 
 import pytest
 
-from casino.domain.enums import CoinSide, GameStatus, GameType
-from casino.domain.records import HOUSE_USER_ID, GameRecord, HouseTreasuryRecord
+from casino.domain.enums import CoinSide, GameStatus, GameType, JackpotStatus
+from casino.domain.records import HOUSE_USER_ID, GameRecord, HouseTreasuryRecord, JackpotRecord
 from casino.services.house_stats_service import HouseStatsCalculator, HouseStatsService
 from casino.utils.money import SolAmount
 from tests.conftest import FrozenClock, StubPriceService
@@ -120,6 +120,74 @@ class TestHouseStatsCalculator:
         assert all_time.games_completed == 3
         assert all_time.unique_players == 5
         assert all_time.fees_lamports == 240_000_000
+
+    def test_vs_house_uses_cashout_not_even_money(self) -> None:
+        now = datetime(2026, 9, 7, 12, 0, tzinfo=UTC)
+        mines_win = GameRecord(
+            game_id="mines-win",
+            status=GameStatus.COMPLETED,
+            creator_id="p1",
+            bet_amount_lamports=50_000_000,
+            currency="USD",
+            bet_amount_fiat=Decimal("5"),
+            bet_amount_usd=Decimal("5"),
+            player_wager_lamports={"p1": 50_000_000},
+            game_type=GameType.MINES,
+            heads_ids=["p1"],
+            tails_ids=[HOUSE_USER_ID],
+            house_seat_ids=[HOUSE_USER_ID],
+            winner_ids=["p1"],
+            winner_id="p1",
+            winner_payout_lamports=200_000_000,
+            per_winner_payout_lamports=200_000_000,
+            resolved_at=now,
+        )
+        mines_loss = GameRecord(
+            game_id="mines-loss",
+            status=GameStatus.COMPLETED,
+            creator_id="p2",
+            bet_amount_lamports=50_000_000,
+            currency="USD",
+            bet_amount_fiat=Decimal("5"),
+            bet_amount_usd=Decimal("5"),
+            player_wager_lamports={"p2": 50_000_000},
+            game_type=GameType.MINES,
+            heads_ids=["p2"],
+            tails_ids=[HOUSE_USER_ID],
+            house_seat_ids=[HOUSE_USER_ID],
+            winner_ids=[HOUSE_USER_ID],
+            winner_id=HOUSE_USER_ID,
+            winner_payout_lamports=0,
+            resolved_at=now,
+        )
+        jackpot = JackpotRecord(
+            jackpot_id="jp1",
+            status=JackpotStatus.COMPLETED,
+            guild_id="1",
+            opener_id="p1",
+            entries_lamports={"p1": 100_000_000, "p3": 100_000_000},
+            winner_id="p1",
+            winner_payout_lamports=194_000_000,
+            house_fee_lamports=6_000_000,
+            resolved_at=now,
+        )
+        report = HouseStatsCalculator().report(
+            games=[mines_win, mines_loss],
+            open_tables=0,
+            treasury=HouseTreasuryRecord(sol_balance_lamports=0),
+            sol_price_usd=Decimal("100"),
+            now=now,
+            jackpots=[jackpot],
+        )
+        day = report.timeframes[0]
+        assert mines_win.house_game_pnl_lamports() == 50_000_000 - 200_000_000
+        assert mines_loss.house_game_pnl_lamports() == 50_000_000
+        assert day.call_bot_games == 0
+        assert day.volume_lamports == 50_000_000 + 50_000_000 + 200_000_000
+        assert day.fees_lamports == 6_000_000
+        assert day.house_net_lamports == (50_000_000 - 200_000_000) + 50_000_000 + 6_000_000
+        assert day.games_completed == 3
+        assert day.unique_players == 3
 
 
 @pytest.mark.asyncio

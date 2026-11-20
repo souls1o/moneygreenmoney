@@ -198,8 +198,12 @@ class RainService:
             rain.amount_fiat * Decimal(RAIN_JOIN_WAGER_BPS) / Decimal(10_000)
         ).quantize(FIAT_QUANTUM, rounding=ROUND_DOWN)
         since = now - timedelta(hours=24)
-        wagered = await self._games.sum_player_wagered_since(player_id, since)
-        deposited = await self._transactions.sum_player_deposited_since(player_id, since)
+        try:
+            wagered = await self._games.sum_player_wagered_since(player_id, since)
+            deposited = await self._transactions.sum_player_deposited_since(player_id, since)
+        except Exception:
+            self._logger.exception("rain_join_progress_failed", userId=player_id)
+            raise RainError("Could not check rain requirements. Try again in a moment.")
         return RainJoinEligibility(
             currency=rain.currency,
             required_fiat=required_fiat,

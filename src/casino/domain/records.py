@@ -215,6 +215,9 @@ class GameRecord:
     def is_jackpot(self) -> bool:
         return self.game_type is GameType.JACKPOT
 
+    def is_vs_house(self) -> bool:
+        return self.is_blackjack() or self.is_limbo() or self.is_mines()
+
     def current_blackjack_hand(self) -> BlackjackHand | None:
         if not self.blackjack_player_hands:
             return None
@@ -280,12 +283,31 @@ class GameRecord:
         return "Team 1" if side is CoinSide.HEADS else "Team 2"
 
     def house_game_pnl_fiat(self) -> Decimal:
-        if self.is_limbo() or self.is_mines():
-            return self.player_profit_fiat(HOUSE_USER_ID)
+        if self.is_vs_house():
+            if not self.bet_amount_lamports:
+                return Decimal("0")
+            return (
+                self.stake_usd()
+                * Decimal(self.house_game_pnl_lamports())
+                / Decimal(self.bet_amount_lamports)
+            )
         house_seats = [player_id for player_id in self.player_ids() if is_house_seat(player_id)]
         wagered = self.bet_amount_fiat * Decimal(len(house_seats))
         won = self.winner_gross_share_fiat() * Decimal(len(self.house_winner_ids()))
         return won - wagered
+
+    def house_game_pnl_lamports(self) -> int:
+        if self.is_vs_house():
+            stake = sum(self.wager_for(player_id).lamports for player_id in self.human_player_ids())
+            return stake - int(self.winner_payout_lamports)
+        house_seats = [player_id for player_id in self.player_ids() if is_house_seat(player_id)]
+        if not house_seats:
+            return 0
+        wagered = sum(self.wager_for(player_id).lamports for player_id in house_seats)
+        return self.house_gross_payout_lamports() - wagered
+
+    def human_volume_lamports(self) -> int:
+        return sum(self.wager_for(player_id).lamports for player_id in self.human_player_ids())
 
     def house_net_fiat(self) -> Decimal:
         return self.house_fee_usd + self.house_game_pnl_fiat()

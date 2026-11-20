@@ -429,7 +429,10 @@ class ComponentRouterCog(commands.Cog):
                 rain = await self._container.rains.join_rain(
                     rain_id, user_id, custom_statuses=statuses
                 )
-                await self._rains().on_joined(rain)
+                try:
+                    await self._rains().on_joined(rain)
+                except Exception:
+                    self._logger.exception("rain_join_listing_update_failed", rainId=rain_id)
                 joined = True
             await interaction.followup.send(
                 **self._embeds.rain_join_gate(

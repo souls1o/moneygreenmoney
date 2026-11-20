@@ -480,10 +480,10 @@ def test_rain_join_gate_marks_completed_and_missing() -> None:
     )
     text = _panel_text(factory.rain_join_gate(missing))
     assert "Rain requirements" in text
-    assert "✅ **Wager** — $5.00 / $5.00" in text
-    assert "❌ **Deposit** — $1.00 / $5.00" in text
-    assert "❌ **Status**" in text
-    assert RAIN_JOIN_STATUS in text
+    assert "✅ $5.00 / $5.00" in text
+    assert "❌ $1.00 / $5.00" in text
+    assert "❌" in text
+    assert "casinounderground" in text
     ready = RainJoinEligibility(
         currency="USD",
         required_fiat=Decimal("5"),
@@ -499,7 +499,8 @@ def test_rain_join_gate_marks_completed_and_missing() -> None:
     )
     joined = _panel_text(factory.rain_join_gate(ready, joined=True))
     assert "Joined the rain" in joined
-    assert "✅ **Deposit**" in joined
+    assert "**Deposit**" in joined
+    assert "✅ $5.00 / $5.00" in joined
 
 
 def _walk_items(view) -> list[object]:

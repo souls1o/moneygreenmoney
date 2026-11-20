@@ -5,18 +5,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from casino.domain.enums import GameStatus
+from casino.domain.enums import GameStatus, JackpotStatus
 from casino.domain.investor import equity_lamports
 from casino.domain.records import (
     GameRecord,
     HouseStatsReport,
     HouseTreasuryRecord,
+    JackpotRecord,
     TimeframeStats,
     is_house_seat,
 )
 from casino.logging.logger import get_logger
 from casino.repositories.game_repository import GameRepository
 from casino.repositories.house_repository import HouseRepository
+from casino.repositories.jackpot_repository import JackpotRepository
 from casino.services.price_service import PriceService
 from casino.solana_client.rpc import SolanaRpcGateway
 from casino.utils.clock import Clock, DateTimeNormalizer
@@ -54,6 +56,7 @@ class HouseStatsCalculator:
         now: datetime,
         windows: Sequence[HouseStatWindow] = HOUSE_STAT_WINDOWS,
         super_wallet_lamports: int = 0,
+        jackpots: Sequence[JackpotRecord] = (),
     ) -> HouseStatsReport:
         aware_now = self._require_utc(now)
         pool = treasury.pool_shares()
@@ -70,7 +73,8 @@ class HouseStatsCalculator:
             open_tables=open_tables,
             sol_price_usd=sol_price_usd,
             timeframes=tuple(
-                self.for_window(games, window=window, now=aware_now) for window in windows
+                self.for_window(games, jackpots, window=window, now=aware_now)
+                for window in windows
             ),
             founder_shares=treasury.founder_shares,
             investor_shares=treasury.investor_shares,
@@ -81,12 +85,16 @@ class HouseStatsCalculator:
     def for_window(
         self,
         games: Sequence[GameRecord],
+        jackpots: Sequence[JackpotRecord] = (),
         *,
         window: HouseStatWindow,
         now: datetime,
     ) -> TimeframeStats:
         since = None if window.delta is None else now - window.delta
         selected = [game for game in games if self._in_window(game, since=since, now=now)]
+        selected_jackpots = [
+            jackpot for jackpot in jackpots if self._jackpot_in_window(jackpot, since=since, now=now)
+        ]
         unique_players: set[str] = set()
         volume_lamports = 0
         volume_usd = Decimal("0")
@@ -95,21 +103,31 @@ class HouseStatsCalculator:
         call_bot_games = 0
         house_wagered = 0
         house_payout = 0
+        house_net = 0
         for game in selected:
-            seats = len(game.player_ids())
-            volume_lamports += game.bet_amount_lamports * seats
-            volume_usd += game.bet_amount_fiat * seats
+            human_volume = game.human_volume_lamports()
+            volume_lamports += human_volume
+            if game.bet_amount_lamports:
+                volume_usd += game.stake_usd() * Decimal(human_volume) / Decimal(game.bet_amount_lamports)
             unique_players.update(game.human_player_ids())
-            house_seats = [player_id for player_id in game.player_ids() if is_house_seat(player_id)]
             fees_lamports += game.house_fee_lamports
             fees_usd += game.house_fee_usd
-            if house_seats:
-                call_bot_games += 1
-                house_wagered += game.bet_amount_lamports * len(house_seats)
-                house_payout += game.house_gross_payout_lamports()
+            pnl = game.house_game_pnl_lamports()
+            house_net += game.house_fee_lamports + pnl
+            if game.is_vs_house() or not any(is_house_seat(player_id) for player_id in game.player_ids()):
+                continue
+            call_bot_games += 1
+            house_seats = [player_id for player_id in game.player_ids() if is_house_seat(player_id)]
+            house_wagered += sum(game.wager_for(player_id).lamports for player_id in house_seats)
+            house_payout += game.house_gross_payout_lamports()
+        for jackpot in selected_jackpots:
+            volume_lamports += jackpot.pot_lamports()
+            unique_players.update(jackpot.player_ids())
+            fees_lamports += int(jackpot.house_fee_lamports)
+            house_net += int(jackpot.house_fee_lamports)
         return TimeframeStats(
             label=window.label,
-            games_completed=len(selected),
+            games_completed=len(selected) + len(selected_jackpots),
             unique_players=len(unique_players),
             volume_lamports=volume_lamports,
             volume_usd=volume_usd,
@@ -118,13 +136,25 @@ class HouseStatsCalculator:
             call_bot_games=call_bot_games,
             house_wagered_lamports=house_wagered,
             house_payout_lamports=house_payout,
-            house_net_lamports=fees_lamports + house_payout - house_wagered,
+            house_net_lamports=house_net,
         )
 
     def _in_window(self, game: GameRecord, *, since: datetime | None, now: datetime) -> bool:
         if game.status is not GameStatus.COMPLETED:
             return False
-        resolved = self._normalizer.to_utc(game.resolved_at)
+        return self._resolved_in_window(game.resolved_at, since=since, now=now)
+
+    def _jackpot_in_window(
+        self, jackpot: JackpotRecord, *, since: datetime | None, now: datetime
+    ) -> bool:
+        if jackpot.status is not JackpotStatus.COMPLETED:
+            return False
+        return self._resolved_in_window(jackpot.resolved_at, since=since, now=now)
+
+    def _resolved_in_window(
+        self, resolved_at: datetime | None, *, since: datetime | None, now: datetime
+    ) -> bool:
+        resolved = self._normalizer.to_utc(resolved_at)
         if resolved is None:
             return False
         if resolved > now:
@@ -148,6 +178,7 @@ class HouseStatsService:
         clock: Clock,
         rpc: SolanaRpcGateway | None = None,
         calculator: HouseStatsCalculator | None = None,
+        jackpot_repository: JackpotRepository | None = None,
     ) -> None:
         self._games = game_repository
         self._house = house_repository
@@ -155,20 +186,24 @@ class HouseStatsService:
         self._clock = clock
         self._rpc = rpc
         self._calculator = calculator or HouseStatsCalculator()
+        self._jackpots = jackpot_repository
         self._logger = get_logger("casino.house_stats")
 
     async def snapshot(self) -> HouseStatsReport:
         treasury = await self._house.get()
         games = await self._games.list_completed_since(treasury.stats_reset_at)
-        open_games = await self._games.list_open(limit=100)
+        jackpots: list[JackpotRecord] = []
+        if self._jackpots is not None:
+            jackpots = await self._jackpots.list_completed_since(treasury.stats_reset_at)
         quote = await self._prices.get_quote(allow_stale=True)
         return self._calculator.report(
             games=games,
-            open_tables=len(open_games),
+            open_tables=await self._games.count_open(),
             treasury=treasury,
             sol_price_usd=quote.sol_price("USD"),
             now=self._clock.now(),
             super_wallet_lamports=await self._super_wallet_balance(),
+            jackpots=jackpots,
         )
 
     async def _super_wallet_balance(self) -> int:

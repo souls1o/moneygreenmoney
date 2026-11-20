@@ -89,6 +89,13 @@ class JackpotRepository(MongoRepository):
         )
         return [self._mapper.jackpot_from_document(document) async for document in cursor]
 
+    async def list_completed_since(self, since: datetime | None = None) -> list[JackpotRecord]:
+        query: dict = {"status": JackpotStatus.COMPLETED.value}
+        if since is not None:
+            query["resolvedAt"] = {"$gte": since}
+        cursor = self.collection.find(query).sort("resolvedAt", -1)
+        return [self._mapper.jackpot_from_document(document) async for document in cursor]
+
     async def list_completed_by_player(self, discord_id: str) -> list[JackpotRecord]:
         cursor = self.collection.find(
             {

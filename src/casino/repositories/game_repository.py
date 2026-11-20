@@ -62,24 +62,46 @@ class GameRepository(MongoRepository):
                     "_id": None,
                     "total": {
                         "$sum": {
-                            "$ifNull": [
-                                f"$playerWagerLamports.{discord_id}",
-                                "$betAmountLamports",
-                            ]
+                            "$let": {
+                                "vars": {
+                                    "entry": {
+                                        "$first": {
+                                            "$filter": {
+                                                "input": {
+                                                    "$objectToArray": {
+                                                        "$ifNull": ["$playerWagerLamports", {}]
+                                                    }
+                                                },
+                                                "as": "item",
+                                                "cond": {"$eq": ["$$item.k", discord_id]},
+                                            }
+                                        }
+                                    }
+                                },
+                                "in": {"$ifNull": ["$$entry.v", "$betAmountLamports"]},
+                            }
                         }
                     },
                 }
             },
         ]
-        cursor = await self.collection.aggregate(pipeline)
-        docs = await cursor.to_list(length=1)
-        if not docs:
+        document = await self.aggregate_first(pipeline)
+        if not document:
             return 0
-        return int(docs[0].get("total") or 0)
+        return int(document.get("total") or 0)
 
     async def list_open(self, limit: int = 20) -> list[GameRecord]:
-        cursor = self.collection.find({"status": GameStatus.PENDING.value}).sort("createdAt", -1).limit(limit)
+        cursor = (
+            self.collection.find({"status": {"$in": [GameStatus.PENDING.value, GameStatus.ACTIVE.value]}})
+            .sort("createdAt", -1)
+            .limit(limit)
+        )
         return [self._mapper.game_from_document(doc) async for doc in cursor]
+
+    async def count_open(self) -> int:
+        return await self.collection.count_documents(
+            {"status": {"$in": [GameStatus.PENDING.value, GameStatus.ACTIVE.value]}}
+        )
 
     async def try_add_to_side(
         self,

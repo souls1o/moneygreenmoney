@@ -1572,14 +1572,7 @@ class EmbedFactory:
         needed = math.format_fiat_symbol(eligibility.required_fiat, eligibility.currency)
         wagered = math.format_fiat_symbol(eligibility.wagered_fiat, eligibility.currency)
         deposited = math.format_fiat_symbol(eligibility.deposited_fiat, eligibility.currency)
-        lines = [
-            f"{'✅' if eligibility.wager_ok else '❌'} **Wager** — {wagered} / {needed} in the last 24 hours",
-            f"{'✅' if eligibility.deposit_ok else '❌'} **Deposit** — {deposited} / {needed} in the last 24 hours",
-            (
-                f"{'✅' if eligibility.status_ok else '❌'} **Status** — "
-                f"`{RAIN_JOIN_STATUS}`"
-            ),
-        ]
+        status = RAIN_JOIN_STATUS.replace("#", "\u2060#")
         if joined:
             title = "Joined the rain"
             extra = "You will be notified with your share when the timer ends."
@@ -1590,7 +1583,19 @@ class EmbedFactory:
             title = "Rain requirements"
             extra = "Meet every requirement, then click Join again."
         return (
-            self.builder(title, description=f"{extra}\n\n" + "\n".join(lines))
+            self.builder(title, description=extra)
+            .field(
+                "Wager",
+                f"{'✅' if eligibility.wager_ok else '❌'} {wagered} / {needed} in the last 24 hours",
+            )
+            .field(
+                "Deposit",
+                f"{'✅' if eligibility.deposit_ok else '❌'} {deposited} / {needed} in the last 24 hours",
+            )
+            .field(
+                "Status",
+                f"{'✅' if eligibility.status_ok else '❌'} `{status}`",
+            )
             .build()
         )
 

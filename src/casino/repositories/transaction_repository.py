@@ -52,11 +52,10 @@ class TransactionRepository(MongoRepository):
             },
             {"$group": {"_id": None, "total": {"$sum": "$amountLamports"}}},
         ]
-        cursor = await self.collection.aggregate(pipeline)
-        docs = await cursor.to_list(length=1)
-        if not docs:
+        document = await self.aggregate_first(pipeline)
+        if not document:
             return 0
-        return int(docs[0].get("total") or 0)
+        return int(document.get("total") or 0)
 
     async def attach_signature(
         self,

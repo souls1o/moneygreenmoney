@@ -38,18 +38,23 @@ def matches_rain_join_status(*texts: str | None) -> bool:
 def rain_status_texts(member: object) -> tuple[str, ...]:
     found: list[str] = []
     seen: set[str] = set()
-    activities = list(getattr(member, "activities", None) or ())
-    activity = getattr(member, "activity", None)
-    if activity is not None:
-        activities.append(activity)
-    for item in activities:
-        for attr in ("name", "state"):
-            value = getattr(item, attr, None)
-            if not isinstance(value, str):
+    try:
+        activities = list(getattr(member, "activities", None) or ())
+        activity = getattr(member, "activity", None)
+        if activity is not None:
+            activities.append(activity)
+        for item in activities:
+            if item is None:
                 continue
-            trimmed = value.strip()
-            if not trimmed or trimmed in seen:
-                continue
-            seen.add(trimmed)
-            found.append(trimmed)
+            for attr in ("name", "state"):
+                value = getattr(item, attr, None)
+                if not isinstance(value, str):
+                    continue
+                trimmed = value.strip()
+                if not trimmed or trimmed in seen:
+                    continue
+                seen.add(trimmed)
+                found.append(trimmed)
+    except Exception:
+        return tuple(found)
     return tuple(found)

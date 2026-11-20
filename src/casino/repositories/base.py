@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from inspect import isawaitable
 from decimal import Decimal
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -19,6 +20,18 @@ class MongoRepository:
     @property
     def database(self) -> AsyncIOMotorDatabase:
         return self._mongo.db
+
+    async def aggregate_first(self, pipeline: list[dict], session=None) -> dict | None:
+        kwargs = {}
+        if session is not None:
+            kwargs["session"] = session
+        cursor = self.collection.aggregate(pipeline, **kwargs)
+        if isawaitable(cursor):
+            cursor = await cursor
+        docs = await cursor.to_list(length=1)
+        if not docs:
+            return None
+        return docs[0]
 
     @staticmethod
     def decimal_to_str(value: Decimal) -> str:

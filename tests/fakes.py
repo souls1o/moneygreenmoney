@@ -338,10 +338,17 @@ class MemoryGameRepository:
         matches = [
             self._clone(game)
             for game in self.games.values()
-            if game.status is GameStatus.PENDING
+            if game.status in {GameStatus.PENDING, GameStatus.ACTIVE}
         ]
         matches.sort(key=lambda game: game.created_at or datetime.min, reverse=True)
         return matches[:limit]
+
+    async def count_open(self) -> int:
+        return sum(
+            1
+            for game in self.games.values()
+            if game.status in {GameStatus.PENDING, GameStatus.ACTIVE}
+        )
 
     async def list_completed_since(self, since: datetime | None = None) -> list[GameRecord]:
         matches = [
@@ -694,6 +701,22 @@ class MemoryJackpotRepository:
             and jackpot.reveal_until is not None
             and jackpot.reveal_until <= now
         ]
+
+    async def list_completed_since(self, since: datetime | None = None) -> list[JackpotRecord]:
+        matches = [
+            self._clone(jackpot)
+            for jackpot in self.items.values()
+            if jackpot.status is JackpotStatus.COMPLETED
+            and (
+                since is None
+                or (jackpot.resolved_at is not None and jackpot.resolved_at >= since)
+            )
+        ]
+        matches.sort(
+            key=lambda jackpot: jackpot.resolved_at or jackpot.created_at or datetime.min,
+            reverse=True,
+        )
+        return matches
 
     async def list_completed_by_player(self, discord_id: str) -> list[JackpotRecord]:
         matches = [
