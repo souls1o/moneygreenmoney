@@ -23,7 +23,7 @@ class RainCog(commands.Cog):
         description="Start a rain. Joiners need 10% wager and deposit in 24h plus the required status.",
     )
     @app_commands.describe(
-        amount="Rain pot in your selected currency (minimum $50 USD)",
+        amount="Rain pot in your selected currency (minimum $50 USD, admins exempt)",
         duration="How long the rain stays open (10s to 7d). Examples: 30s, 5m, 2h, 1d",
     )
     @app_commands.allowed_installs(guilds=True, users=False)
@@ -56,6 +56,7 @@ class RainCog(commands.Cog):
                     fiat_amount=fiat,
                     duration_seconds=seconds,
                     guild_id=str(interaction.guild_id),
+                    waive_minimum=self._can_waive_minimum(interaction),
                 )
                 rain_id = rain.rain_id
                 from casino.discord_bot.bot import CasinoBot
@@ -81,3 +82,12 @@ class RainCog(commands.Cog):
                     except Exception:
                         pass
                 await interaction.followup.send(**self._errors.panel_for(exc).send_kwargs(ephemeral=True))
+
+    def _can_waive_minimum(self, interaction: discord.Interaction) -> bool:
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            return False
+        if member.guild_permissions.administrator:
+            return True
+        role_ids = [role.id for role in member.roles]
+        return self._container.permissions.is_admin(member.id, role_ids)

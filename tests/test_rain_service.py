@@ -171,6 +171,19 @@ class TestRainService:
         assert any(entry.type is LedgerEntryType.RAIN for entry in harness.ledger_repo.entries)
 
     @pytest.mark.asyncio
+    async def test_admin_can_create_below_minimum(self, harness: RainHarness) -> None:
+        harness.seed_user("admin")
+        rain = await harness.service.create_rain(
+            creator_id="admin",
+            fiat_amount=Decimal("1"),
+            duration_seconds=30,
+            guild_id="1",
+            waive_minimum=True,
+        )
+        assert rain.amount_lamports == SolAmount.parse("0.01").lamports
+        assert rain.status is RainStatus.PENDING
+
+    @pytest.mark.asyncio
     async def test_duration_bounds(self, harness: RainHarness) -> None:
         harness.seed_user("creator")
         with pytest.raises(ValidationError, match="at least 10"):

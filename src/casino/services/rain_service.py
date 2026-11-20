@@ -73,6 +73,7 @@ class RainService:
         fiat_amount: Decimal,
         duration_seconds: int,
         guild_id: str | None = None,
+        waive_minimum: bool = False,
     ) -> RainRecord:
         self._require_duration(duration_seconds)
         user = await self._users.get_or_create(creator_id)
@@ -82,7 +83,7 @@ class RainService:
         usd_price = quote.sol_price("USD")
         amount_usd = fiat_amount * usd_price / sol_price
         minimum = Decimal(self._settings.min_rain_usd)
-        if amount_usd < minimum:
+        if not waive_minimum and amount_usd < minimum:
             raise ValidationError(
                 f"Minimum rain is {self._math.format_fiat_symbol(minimum, 'USD')}."
             )
