@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 RAIN_JOIN_STATUS = ".gg/casinounderground #1 Crypto Casino"
+_STATUS_INVISIBLE = dict.fromkeys(map(ord, "\u200b\u200c\u200d\u2060\ufeff"), None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +26,8 @@ class RainJoinEligibility:
 
 
 def normalize_custom_status(text: str) -> str:
-    return " ".join(text.split())
+    cleaned = text.translate(_STATUS_INVISIBLE)
+    return " ".join(cleaned.split())
 
 
 def matches_rain_join_status(*texts: str | None) -> bool:
@@ -46,12 +48,12 @@ def rain_status_texts(member: object) -> tuple[str, ...]:
         for item in activities:
             if item is None:
                 continue
-            for attr in ("name", "state"):
-                value = getattr(item, attr, None)
+            values: list[object] = [getattr(item, attr, None) for attr in ("name", "state", "details")]
+            for value in values:
                 if not isinstance(value, str):
                     continue
                 trimmed = value.strip()
-                if not trimmed or trimmed in seen:
+                if not trimmed or trimmed == "Custom Status" or trimmed in seen:
                     continue
                 seen.add(trimmed)
                 found.append(trimmed)

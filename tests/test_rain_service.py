@@ -428,13 +428,14 @@ class TestRainService:
 def test_rain_join_status_matches_custom_activity() -> None:
     assert matches_rain_join_status(RAIN_JOIN_STATUS)
     assert matches_rain_join_status(f"  {RAIN_JOIN_STATUS}  ")
+    assert matches_rain_join_status(RAIN_JOIN_STATUS.replace("#", "\u2060#"))
     assert not matches_rain_join_status("playing")
     member = type(
         "Member",
         (),
         {
             "activities": (
-                type("Activity", (), {"name": RAIN_JOIN_STATUS, "state": None})(),
+                type("Activity", (), {"name": "Custom Status", "state": RAIN_JOIN_STATUS})(),
             ),
             "activity": None,
         },

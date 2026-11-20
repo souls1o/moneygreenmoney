@@ -408,12 +408,7 @@ class ComponentRouterCog(commands.Cog):
     async def _on_rain_join(self, interaction: discord.Interaction, rain_id: str) -> None:
         await interaction.response.defer(ephemeral=True)
         with LogContext.bind(userId=str(interaction.user.id), rainId=rain_id):
-            member = interaction.user
-            if interaction.guild is not None:
-                cached = interaction.guild.get_member(interaction.user.id)
-                if cached is not None:
-                    member = cached
-            statuses = rain_status_texts(member)
+            statuses = await self._rain_custom_statuses(interaction)
             user_id = str(interaction.user.id)
             eligibility = await self._container.rains.evaluate_join(
                 rain_id, user_id, custom_statuses=statuses
@@ -448,6 +443,41 @@ class ComponentRouterCog(commands.Cog):
                 ephemeral=True
             )
         )
+
+    async def _rain_custom_statuses(self, interaction: discord.Interaction) -> tuple[str, ...]:
+        from casino.discord_bot.bot import CasinoBot
+
+        user_id = interaction.user.id
+        found: list[str] = []
+        seen: set[str] = set()
+
+        def add(source: object | None) -> None:
+            if source is None:
+                return
+            for text in rain_status_texts(source):
+                if text not in seen:
+                    seen.add(text)
+                    found.append(text)
+
+        add(interaction.user)
+        guild = interaction.guild
+        if guild is not None:
+            add(guild.get_member(user_id))
+            try:
+                queried = await guild.query_members(user_ids=[user_id], presences=True, cache=True)
+            except Exception:
+                self._logger.warning("rain_presence_query_failed", userId=str(user_id), exc_info=True)
+                queried = []
+            for member in queried:
+                add(member)
+                if isinstance(self.bot, CasinoBot):
+                    self.bot.remember_presence_texts(member)
+        if isinstance(self.bot, CasinoBot):
+            for text in self.bot.remembered_presence_texts(user_id):
+                if text not in seen:
+                    seen.add(text)
+                    found.append(text)
+        return tuple(found)
 
     def _tables(self):
         from casino.discord_bot.bot import CasinoBot

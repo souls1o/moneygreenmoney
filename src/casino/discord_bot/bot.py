@@ -5,6 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from casino.container import AppContainer
+from casino.domain.rain import rain_status_texts
 from casino.discord_bot.cogs.admin import AdminCog
 from casino.discord_bot.cogs.affiliate import AffiliateCog
 from casino.discord_bot.cogs.balance import BalanceCog
@@ -99,6 +100,19 @@ class CasinoBot(commands.Bot):
         )
 
     async def on_ready(self) -> None:
+    def remember_presence_texts(self, member: discord.Member | discord.User | None) -> None:
+        if member is None:
+            return
+        texts = rain_status_texts(member)
+        if texts:
+            self._presence_status_texts[member.id] = texts
+
+    def remembered_presence_texts(self, user_id: int) -> tuple[str, ...]:
+        return self._presence_status_texts.get(user_id, ())
+
+    async def on_presence_update(self, before: discord.Member, after: discord.Member) -> None:
+        self.remember_presence_texts(after)
+
         self._logger.info("discord_ready", user=str(self.user), userId=str(self.user.id) if self.user else None)
         try:
             await self.rains.resume()
