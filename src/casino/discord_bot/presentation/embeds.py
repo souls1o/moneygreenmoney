@@ -16,7 +16,7 @@ from casino.domain.affiliate import (
 from casino.domain.blackjack import BlackjackAction, BlackjackOutcome, hand_total
 from casino.domain.limbo import LIMBO_START, format_limbo_multiplier
 from casino.domain.mines import MINES_TILES, format_mines_multiplier, mines_multiplier
-from casino.domain.rain import RAIN_JOIN_STATUS
+from casino.domain.rain import RAIN_JOIN_STATUS, RainJoinEligibility
 from casino.domain.investor import InvestorPosition
 from casino.domain.enums import (
     CoinSide,
@@ -1562,6 +1562,38 @@ class EmbedFactory:
             )
         return panel
 
+    def rain_join_gate(
+        self,
+        eligibility: RainJoinEligibility,
+        *,
+        joined: bool = False,
+    ) -> CasinoPanel:
+        math = self._container.math
+        needed = math.format_fiat_symbol(eligibility.required_fiat, eligibility.currency)
+        wagered = math.format_fiat_symbol(eligibility.wagered_fiat, eligibility.currency)
+        deposited = math.format_fiat_symbol(eligibility.deposited_fiat, eligibility.currency)
+        lines = [
+            f"{'✅' if eligibility.wager_ok else '❌'} **Wager** — {wagered} / {needed} in the last 24 hours",
+            f"{'✅' if eligibility.deposit_ok else '❌'} **Deposit** — {deposited} / {needed} in the last 24 hours",
+            (
+                f"{'✅' if eligibility.status_ok else '❌'} **Status** — "
+                f"`{RAIN_JOIN_STATUS}`"
+            ),
+        ]
+        if joined:
+            title = "Joined the rain"
+            extra = "You will be notified with your share when the timer ends."
+        elif eligibility.already_joined:
+            title = "Already joined"
+            extra = "You're already in this rain."
+        else:
+            title = "Rain requirements"
+            extra = "Meet every requirement, then click Join again."
+        return (
+            self.builder(title, description=f"{extra}\n\n" + "\n".join(lines))
+            .build()
+        )
+
     def _timeframe_body(self, window: TimeframeStats, sol_price: Decimal) -> str:
         call_pnl = window.house_payout_lamports - window.house_wagered_lamports
         return (
@@ -2265,10 +2297,7 @@ class EmbedFactory:
             return f"{who} started a rain of **{pot}**. **{joiners}** joined. Settling."
         return (
             f"{who} started a rain of **{pot}**. **{joiners}** joined so far. "
-            "Click Join for an equal share when the timer ends. "
-            "To join you must have **wagered** and **deposited** at least **10% of this rain** "
-            "in the last 24 hours, and your Discord custom status must be "
-            f"`{RAIN_JOIN_STATUS}`."
+            "Click Join for an equal share when the timer ends."
         )
 
     def _rain_share_fiat(self, rain: RainRecord) -> Decimal | None:

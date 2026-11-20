@@ -12,8 +12,14 @@ from casino.domain.enums import (
     TransactionStatus,
     TransactionType,
 )
-from casino.domain.rain import RAIN_JOIN_STATUS, matches_rain_join_status, rain_status_texts
-from casino.domain.records import GameRecord, TransactionRecord, UserRecord
+from casino.discord_bot.presentation.embeds import EmbedFactory
+from casino.domain.rain import (
+    RAIN_JOIN_STATUS,
+    RainJoinEligibility,
+    matches_rain_join_status,
+    rain_status_texts,
+)
+from casino.domain.records import GameRecord, RainRecord, TransactionRecord, UserRecord
 from casino.errors import RainError, ValidationError
 from casino.services.balance_service import BalanceService
 from casino.services.ledger_service import LedgerService
@@ -394,6 +400,30 @@ class TestRainService:
         joined = await harness.join(rain.rain_id, "p1", status=f"  {RAIN_JOIN_STATUS}  ")
         assert joined.has_joined("p1")
 
+    @pytest.mark.asyncio
+    async def test_evaluate_join_reports_each_requirement(self, harness: RainHarness) -> None:
+        harness.seed_user("creator")
+        harness.seed_user("p1")
+        rain = await harness.service.create_rain(
+            creator_id="creator",
+            fiat_amount=Decimal("50"),
+            duration_seconds=30,
+        )
+        harness.seed_wager("p1", 50_000_000)
+        check = await harness.service.evaluate_join(rain.rain_id, "p1")
+        assert check.wager_ok is True
+        assert check.deposit_ok is False
+        assert check.status_ok is False
+        assert check.required_fiat == Decimal("5.00")
+        assert check.wagered_fiat == Decimal("5.00")
+        assert check.deposited_fiat == Decimal("0.00")
+        assert check.requirements_met() is False
+        harness.seed_deposit("p1", 50_000_000)
+        ready = await harness.service.evaluate_join(
+            rain.rain_id, "p1", custom_statuses=(RAIN_JOIN_STATUS,)
+        )
+        assert ready.requirements_met() is True
+
 
 def test_rain_join_status_matches_custom_activity() -> None:
     assert matches_rain_join_status(RAIN_JOIN_STATUS)
@@ -410,3 +440,91 @@ def test_rain_join_status_matches_custom_activity() -> None:
         },
     )()
     assert rain_status_texts(member) == (RAIN_JOIN_STATUS,)
+
+
+class _EmbedContainer:
+    math = MathService(300)
+    settings = StubSettings()
+
+
+def test_rain_listing_omits_join_requirements() -> None:
+    factory = EmbedFactory(_EmbedContainer())  # type: ignore[arg-type]
+    rain = RainRecord(
+        rain_id="r1",
+        status=RainStatus.PENDING,
+        creator_id="1",
+        amount_lamports=500_000_000,
+        currency="USD",
+        amount_fiat=Decimal("50"),
+    )
+    text = _panel_text(factory.rain_listing(rain))
+    assert "Click Join" in text
+    assert "10%" not in text
+    assert RAIN_JOIN_STATUS not in text
+
+
+def test_rain_join_gate_marks_completed_and_missing() -> None:
+    factory = EmbedFactory(_EmbedContainer())  # type: ignore[arg-type]
+    missing = RainJoinEligibility(
+        currency="USD",
+        required_fiat=Decimal("5"),
+        wagered_fiat=Decimal("5"),
+        deposited_fiat=Decimal("1"),
+        wager_ok=True,
+        deposit_ok=False,
+        status_ok=False,
+        is_creator=False,
+        already_joined=False,
+        is_open=True,
+        has_ended=False,
+    )
+    text = _panel_text(factory.rain_join_gate(missing))
+    assert "Rain requirements" in text
+    assert "✅ **Wager** — $5.00 / $5.00" in text
+    assert "❌ **Deposit** — $1.00 / $5.00" in text
+    assert "❌ **Status**" in text
+    assert RAIN_JOIN_STATUS in text
+    ready = RainJoinEligibility(
+        currency="USD",
+        required_fiat=Decimal("5"),
+        wagered_fiat=Decimal("5"),
+        deposited_fiat=Decimal("5"),
+        wager_ok=True,
+        deposit_ok=True,
+        status_ok=True,
+        is_creator=False,
+        already_joined=False,
+        is_open=True,
+        has_ended=False,
+    )
+    joined = _panel_text(factory.rain_join_gate(ready, joined=True))
+    assert "Joined the rain" in joined
+    assert "✅ **Deposit**" in joined
+
+
+def _walk_items(view) -> list[object]:
+    items: list[object] = []
+    seen: set[int] = set()
+    stack = [view]
+    while stack:
+        current = stack.pop()
+        marker = id(current)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        items.append(current)
+        children = getattr(current, "children", None) or getattr(current, "_children", None) or ()
+        stack.extend(list(children))
+        walked = getattr(current, "walk_children", None)
+        if callable(walked):
+            stack.extend(list(walked()))
+    return items
+
+
+def _panel_text(panel) -> str:
+    chunks: list[str] = []
+    for item in _walk_items(panel.view):
+        content = getattr(item, "content", None)
+        if content:
+            chunks.append(str(content))
+    return "\n".join(chunks)

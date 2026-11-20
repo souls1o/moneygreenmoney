@@ -70,8 +70,7 @@ class RainCog(commands.Cog):
                 await interaction.followup.send(
                     **self._embeds.success(
                         "Rain started",
-                        f"Join it in {listing}. Joiners need a 10% wager and 10% deposit in the last 24 hours, "
-                        "plus the required custom status.",
+                        f"Join it in {listing}.",
                     ).send_kwargs(ephemeral=True)
                 )
             except Exception as exc:

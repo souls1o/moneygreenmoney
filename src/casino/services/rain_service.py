@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from casino.config.settings import Settings
 from casino.db.unit_of_work import UnitOfWorkFactory
 from casino.domain.enums import LedgerEntryType, RainStatus, TransactionType
-from casino.domain.rain import RAIN_JOIN_STATUS, matches_rain_join_status
+from casino.domain.rain import RAIN_JOIN_STATUS, RainJoinEligibility, matches_rain_join_status
 from casino.domain.records import RainRecord
 from casino.errors import NotFoundError, RainError, ValidationError
 from casino.logging.logger import LogContext, get_logger
@@ -20,7 +20,13 @@ from casino.services.user_service import UserService
 from casino.services.validation_service import ValidationService
 from casino.utils.clock import Clock
 from casino.utils.identifiers import IdentifierFactory
-from casino.utils.money import RAIN_JOIN_DEPOSIT_BPS, RAIN_JOIN_WAGER_BPS, MathService, SolAmount
+from casino.utils.money import (
+    FIAT_QUANTUM,
+    RAIN_JOIN_DEPOSIT_BPS,
+    RAIN_JOIN_WAGER_BPS,
+    MathService,
+    SolAmount,
+)
 from casino.utils.rng import ProvablyFairService
 
 
@@ -137,20 +143,33 @@ class RainService:
         *,
         custom_statuses: Sequence[str] = (),
     ) -> RainRecord:
-        await self._users.get_or_create(player_id)
-        existing = await self.get(rain_id)
-        if existing.creator_id == player_id:
+        eligibility = await self.evaluate_join(rain_id, player_id, custom_statuses=custom_statuses)
+        if eligibility.is_creator:
             raise RainError("You cannot join your own rain.")
-        if existing.has_joined(player_id):
+        if eligibility.already_joined:
             raise RainError("You already joined this rain.")
-        if not existing.is_open():
+        if not eligibility.is_open:
             raise RainError("This rain is no longer open.")
-        now = self._clock.now()
-        if existing.expires_at is not None and existing.expires_at <= now:
+        if eligibility.has_ended:
             raise RainError("This rain has already ended.")
-        await self._require_recent_wager(existing, player_id, now)
-        await self._require_recent_deposit(existing, player_id, now)
-        self._require_join_status(custom_statuses)
+        if not eligibility.wager_ok:
+            raise RainError(
+                "You must have wagered at least "
+                f"{self._math.format_fiat_symbol(eligibility.required_fiat, eligibility.currency)} "
+                "in the last 24 hours to join this rain."
+            )
+        if not eligibility.deposit_ok:
+            raise RainError(
+                "You must have deposited at least "
+                f"{self._math.format_fiat_symbol(eligibility.required_fiat, eligibility.currency)} "
+                "in the last 24 hours to join this rain."
+            )
+        if not eligibility.status_ok:
+            raise RainError(
+                "Set your Discord custom status to "
+                f"`{RAIN_JOIN_STATUS}` to join this rain."
+            )
+        now = self._clock.now()
         with LogContext.bind(userId=player_id, rainId=rain_id):
             claimed = await self._rains.try_add_joiner(rain_id, player_id, now)
             if claimed is None:
@@ -162,6 +181,45 @@ class RainService:
                 raise RainError("This rain is no longer open.")
             self._logger.info("rain_joined", joiners=claimed.joiner_count())
         return claimed
+
+    async def evaluate_join(
+        self,
+        rain_id: str,
+        player_id: str,
+        *,
+        custom_statuses: Sequence[str] = (),
+    ) -> RainJoinEligibility:
+        await self._users.get_or_create(player_id)
+        rain = await self.get(rain_id)
+        now = self._clock.now()
+        wager_required = (rain.amount_lamports * RAIN_JOIN_WAGER_BPS) // 10_000
+        deposit_required = (rain.amount_lamports * RAIN_JOIN_DEPOSIT_BPS) // 10_000
+        required_fiat = (
+            rain.amount_fiat * Decimal(RAIN_JOIN_WAGER_BPS) / Decimal(10_000)
+        ).quantize(FIAT_QUANTUM, rounding=ROUND_DOWN)
+        since = now - timedelta(hours=24)
+        wagered = await self._games.sum_player_wagered_since(player_id, since)
+        deposited = await self._transactions.sum_player_deposited_since(player_id, since)
+        return RainJoinEligibility(
+            currency=rain.currency,
+            required_fiat=required_fiat,
+            wagered_fiat=self._progress_fiat(rain, wagered),
+            deposited_fiat=self._progress_fiat(rain, deposited),
+            wager_ok=wagered >= wager_required,
+            deposit_ok=deposited >= deposit_required,
+            status_ok=matches_rain_join_status(*custom_statuses),
+            is_creator=rain.creator_id == player_id,
+            already_joined=rain.has_joined(player_id),
+            is_open=rain.is_open(),
+            has_ended=rain.expires_at is not None and rain.expires_at <= now,
+        )
+
+    def _progress_fiat(self, rain: RainRecord, lamports: int) -> Decimal:
+        if rain.amount_lamports <= 0:
+            return Decimal("0")
+        return (
+            rain.amount_fiat * Decimal(max(int(lamports), 0)) / Decimal(rain.amount_lamports)
+        ).quantize(FIAT_QUANTUM, rounding=ROUND_DOWN)
 
     async def list_open(self) -> list[RainRecord]:
         return await self._rains.list_open()
@@ -295,40 +353,6 @@ class RainService:
                 joiners=current.joiner_count(),
             )
         return current
-
-    async def _require_recent_wager(self, rain: RainRecord, player_id: str, now) -> None:
-        required = (rain.amount_lamports * RAIN_JOIN_WAGER_BPS) // 10_000
-        wagered = await self._games.sum_player_wagered_since(player_id, now - timedelta(hours=24))
-        if wagered >= required:
-            return
-        needed = rain.amount_fiat * Decimal(RAIN_JOIN_WAGER_BPS) / Decimal(10_000)
-        raise RainError(
-            "You must have wagered at least "
-            f"{self._math.format_fiat_symbol(needed, rain.currency)} "
-            "in the last 24 hours to join this rain."
-        )
-
-    async def _require_recent_deposit(self, rain: RainRecord, player_id: str, now) -> None:
-        required = (rain.amount_lamports * RAIN_JOIN_DEPOSIT_BPS) // 10_000
-        deposited = await self._transactions.sum_player_deposited_since(
-            player_id, now - timedelta(hours=24)
-        )
-        if deposited >= required:
-            return
-        needed = rain.amount_fiat * Decimal(RAIN_JOIN_DEPOSIT_BPS) / Decimal(10_000)
-        raise RainError(
-            "You must have deposited at least "
-            f"{self._math.format_fiat_symbol(needed, rain.currency)} "
-            "in the last 24 hours to join this rain."
-        )
-
-    def _require_join_status(self, custom_statuses: Sequence[str]) -> None:
-        if matches_rain_join_status(*custom_statuses):
-            return
-        raise RainError(
-            "Set your Discord custom status to "
-            f"`{RAIN_JOIN_STATUS}` to join this rain."
-        )
 
     def _require_duration(self, seconds: int) -> None:
         minimum = int(self._settings.min_rain_seconds)

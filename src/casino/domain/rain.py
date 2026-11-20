@@ -1,6 +1,27 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from decimal import Decimal
+
 RAIN_JOIN_STATUS = ".gg/casinounderground #1 Crypto Casino"
+
+
+@dataclass(frozen=True, slots=True)
+class RainJoinEligibility:
+    currency: str
+    required_fiat: Decimal
+    wagered_fiat: Decimal
+    deposited_fiat: Decimal
+    wager_ok: bool
+    deposit_ok: bool
+    status_ok: bool
+    is_creator: bool
+    already_joined: bool
+    is_open: bool
+    has_ended: bool
+
+    def requirements_met(self) -> bool:
+        return self.wager_ok and self.deposit_ok and self.status_ok
 
 
 def normalize_custom_status(text: str) -> str:

@@ -22,7 +22,7 @@ from casino.discord_bot.presentation.modals import (
 )
 from casino.domain.enums import CoinSide, GameStatus, TicketCategory
 from casino.domain.rain import rain_status_texts
-from casino.errors import AppError
+from casino.errors import AppError, RainError
 from casino.logging.logger import LogContext, get_logger
 
 
@@ -413,16 +413,27 @@ class ComponentRouterCog(commands.Cog):
                 cached = interaction.guild.get_member(interaction.user.id)
                 if cached is not None:
                     member = cached
-            rain = await self._container.rains.join_rain(
-                rain_id,
-                str(interaction.user.id),
-                custom_statuses=rain_status_texts(member),
+            statuses = rain_status_texts(member)
+            user_id = str(interaction.user.id)
+            eligibility = await self._container.rains.evaluate_join(
+                rain_id, user_id, custom_statuses=statuses
             )
-            await self._rains().on_joined(rain)
+            if eligibility.is_creator:
+                raise RainError("You cannot join your own rain.")
+            if not eligibility.is_open:
+                raise RainError("This rain is no longer open.")
+            if eligibility.has_ended:
+                raise RainError("This rain has already ended.")
+            joined = False
+            if not eligibility.already_joined and eligibility.requirements_met():
+                rain = await self._container.rains.join_rain(
+                    rain_id, user_id, custom_statuses=statuses
+                )
+                await self._rains().on_joined(rain)
+                joined = True
             await interaction.followup.send(
-                **self._embeds.success(
-                    "Joined the rain",
-                    "You will be notified with your share when the timer ends.",
+                **self._embeds.rain_join_gate(
+                    eligibility, joined=joined
                 ).send_kwargs(ephemeral=True)
             )
 
