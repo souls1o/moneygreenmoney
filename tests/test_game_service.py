@@ -199,7 +199,7 @@ async def test_resolve_keeps_the_original_client_seed() -> None:
     game = await harness.service.create_game(player1_id="1", fiat_amount=Decimal("5"), side=CoinSide.HEADS)
     await harness.service.join_game(game.game_id, "2")
     resolved = await harness.ready_all(game.game_id)
-    assert resolved.client_seed == "fixed-client-seed"
+    assert resolved.client_seed == "fixed-client-seed:fixed-client-seed"
     assert resolved.nonce == game.nonce
 
 

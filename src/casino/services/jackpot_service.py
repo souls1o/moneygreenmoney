@@ -22,7 +22,7 @@ from casino.services.validation_service import ValidationService
 from casino.utils.clock import Clock
 from casino.utils.identifiers import IdentifierFactory
 from casino.utils.money import MathService, SolAmount
-from casino.utils.rng import ProvablyFairService
+from casino.utils.rng import ProvablyFairService, combined_client_seed
 
 
 class JackpotService:
@@ -98,7 +98,7 @@ class JackpotService:
             message_id=message_id,
             server_seed_hash=commitment.server_seed_hash,
             server_seed=commitment.server_seed,
-            client_seed=self._rng.client_seed(),
+            client_seed="",
             nonce=await self._house.take_next_fair_nonce(),
             created_at=now,
         )
@@ -139,6 +139,12 @@ class JackpotService:
                 )
                 current.ledger_ids.append(debit.ledger_entry.entry_id)
                 current.entries_lamports[player_id] = bet.lamports
+                fair = await self._users.ensure_fairness(player_id, session=uow.session)
+                if fair.fair_client_seed:
+                    current.client_seeds[player_id] = fair.fair_client_seed
+                    current.client_seed = combined_client_seed(
+                        current.client_seeds, list(current.entries_lamports)
+                    )
                 if current.opener_id is None:
                     current.opener_id = player_id
                     current.expires_at = now + timedelta(seconds=JACKPOT_SECONDS)

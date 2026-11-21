@@ -76,6 +76,16 @@ class GameTablePresenter:
         await self._container.games.attach_listing(game.game_id, str(listing.channel.id), str(listing.id))
         return await self._container.games.get(game.game_id)
 
+    async def send_fairness_lock(self, interaction: discord.Interaction, game: GameRecord) -> None:
+        if not game.server_seed_hash:
+            return
+        panel = self._embeds.fairness_lock(game)
+        try:
+            await interaction.followup.send(**panel.send_kwargs(ephemeral=True))
+        except discord.HTTPException:
+            self._logger.warning("fairness_lock_failed", gameId=game.game_id)
+        panel.stop()
+
     async def provision_here(self, game: GameRecord, channel: discord.abc.Messageable) -> GameRecord:
         if game.guild_id:
             await self._container.games.attach_guild(game.game_id, game.guild_id)
@@ -281,6 +291,8 @@ class GameTablePresenter:
             await self._container.games.attach_listing(game.game_id, channel_id, message_id)
         if game.status is GameStatus.COMPLETED:
             await self.on_resolved(game, interaction=interaction)
+        if interaction is not None:
+            await self.send_fairness_lock(interaction, game)
         return game
 
     async def handle_limbo_redeal(
@@ -328,6 +340,8 @@ class GameTablePresenter:
             game.message_id = message_id
         if game.status is GameStatus.COMPLETED:
             await self.on_resolved(game, interaction=interaction)
+        if interaction is not None:
+            await self.send_fairness_lock(interaction, game)
         return game
 
     async def handle_mines_redeal(
@@ -375,6 +389,8 @@ class GameTablePresenter:
             game.message_id = message_id
         if game.status is GameStatus.COMPLETED:
             await self.on_resolved(game, interaction=interaction)
+        if interaction is not None:
+            await self.send_fairness_lock(interaction, game)
         return game
 
     async def _animate_blackjack_dealer(

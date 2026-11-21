@@ -33,6 +33,27 @@ async def test_vs_house_uses_precommitted_account_hash() -> None:
     assert game.client_seed == before.fair_client_seed
     assert game.nonce == before.fair_nonce
     assert after.fair_nonce != before.fair_nonce
+    assert game.client_seeds == {"1": before.fair_client_seed}
+
+
+@pytest.mark.asyncio
+async def test_pvp_combines_seated_player_client_seeds() -> None:
+    harness = GameHarness()
+    harness.seed_user("1", "10")
+    harness.seed_user("2", "10")
+    await harness.service._user_service.ensure_fairness("1")
+    await harness.service._user_service.ensure_fairness("2")
+    harness.users_repo.users["1"].fair_client_seed = "seed-a"
+    harness.users_repo.users["2"].fair_client_seed = "seed-b"
+    game = await harness.service.create_game(
+        player1_id="1",
+        fiat_amount=Decimal("5"),
+        side=CoinSide.HEADS,
+    )
+    assert game.client_seed == "seed-a"
+    joined = await harness.service.join_game(game.game_id, "2")
+    assert joined.client_seeds == {"1": "seed-a", "2": "seed-b"}
+    assert joined.client_seed == "seed-a:seed-b"
 
 
 @pytest.mark.asyncio

@@ -145,6 +145,7 @@ class GameRecord:
     server_seed_hash: str = ""
     server_seed: str | None = None
     client_seed: str = ""
+    client_seeds: dict[str, str] = field(default_factory=dict)
     nonce: int = 0
     ledger_ids: list[str] = field(default_factory=list)
     created_at: datetime | None = None
@@ -620,6 +621,7 @@ class JackpotRecord:
     server_seed_hash: str = ""
     server_seed: str | None = None
     client_seed: str = ""
+    client_seeds: dict[str, str] = field(default_factory=dict)
     nonce: int = 0
     fair_digest: str = ""
     ledger_ids: list[str] = field(default_factory=list)

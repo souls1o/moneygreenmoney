@@ -94,6 +94,16 @@ class FairRandomService:
         return CoinSide.HEADS if secrets.randbits(1) == 0 else CoinSide.TAILS
 
 
+def combined_client_seed(player_seeds: dict[str, str], ordered_ids: list[str]) -> str:
+    """Join seated players' client seeds in seat order. House seats are skipped."""
+    parts = [
+        player_seeds[player_id]
+        for player_id in ordered_ids
+        if player_seeds.get(player_id)
+    ]
+    return ":".join(parts)
+
+
 class ProvablyFairService:
     """Commit-reveal RNG. Result is HMAC(server_seed, client_seed:nonce)."""
 

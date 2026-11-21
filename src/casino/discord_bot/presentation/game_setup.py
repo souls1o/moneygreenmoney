@@ -144,6 +144,7 @@ class GameSetupView(discord.ui.LayoutView):
                 await interaction.edit_original_response(
                     **self._success_panel(refreshed, message).edit_kwargs()
                 )
+                await bot.tables.send_fairness_lock(interaction, refreshed)
             except Exception as exc:
                 if game_id is not None and not posted:
                     try:
@@ -397,6 +398,7 @@ async def _start_blackjack(
                 raise RuntimeError("Casino bot is not ready.")
             refreshed = await bot.tables.provision_blackjack_interaction(game, interaction)
             posted = True
+            await bot.tables.send_fairness_lock(interaction, refreshed)
             if refreshed.status is GameStatus.COMPLETED:
                 await bot.tables.on_resolved(refreshed, interaction=interaction)
         except Exception as exc:
@@ -440,6 +442,7 @@ async def start_limbo(
                 raise RuntimeError("Casino bot is not ready.")
             refreshed = await bot.tables.provision_limbo_interaction(game, interaction)
             posted = True
+            await bot.tables.send_fairness_lock(interaction, refreshed)
             if refreshed.status is GameStatus.COMPLETED:
                 await bot.tables.on_resolved(refreshed, interaction=interaction)
         except Exception as exc:
@@ -483,6 +486,7 @@ async def start_mines(
                 raise RuntimeError("Casino bot is not ready.")
             refreshed = await bot.tables.provision_mines_interaction(game, interaction)
             posted = True
+            await bot.tables.send_fairness_lock(interaction, refreshed)
             if refreshed.status is GameStatus.COMPLETED:
                 await bot.tables.on_resolved(refreshed, interaction=interaction)
         except Exception as exc:

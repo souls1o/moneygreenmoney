@@ -245,6 +245,7 @@ class ComponentRouterCog(commands.Cog):
             game = await self._container.games.join_game(game_id, str(interaction.user.id), side)
             await self._tables().on_seat_taken(game, interaction.user, interaction=interaction)
             await self._send_panel(interaction, self._embeds.joined_table(game), ephemeral=True)
+            await self._tables().send_fairness_lock(interaction, game)
             if game.is_awaiting_settlement() or game.status is GameStatus.COMPLETED:
                 try:
                     await self._tables().on_resolved(game, interaction=interaction)
@@ -313,6 +314,7 @@ class ComponentRouterCog(commands.Cog):
             await interaction.followup.send(
                 **self._embeds.joined_table(game).send_kwargs(ephemeral=True)
             )
+            await self._tables().send_fairness_lock(interaction, game)
 
     async def _on_decline_rematch(self, interaction: discord.Interaction, game_id: str) -> None:
         await interaction.response.defer(ephemeral=True)

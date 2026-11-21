@@ -816,6 +816,38 @@ class EmbedFactory:
             return self._target_fair(game, revealed)
         return self._coinflip_fair(game, revealed)
 
+    def fairness_lock(self, game: GameRecord) -> CasinoPanel:
+        if game.is_vs_house():
+            description = (
+                "These values were locked when this round started. "
+                "The server seed stays hidden until the round ends. "
+                "Change your client seed in `/settings` before the next bet."
+            )
+        else:
+            description = (
+                "The house committed the **server seed hash** before this table filled. "
+                "The **client seed** is each seated player's `/settings` seed joined in seat order with `:`. "
+                "It updates when someone joins. The server seed is revealed after the match."
+            )
+        return (
+            self.builder("Fairness lock", description=description)
+            .field("Server seed hash", f"`{game.server_seed_hash}`")
+            .field("Client seed", self._client_seed_display(game))
+            .field("Nonce", str(game.nonce))
+            .build()
+        )
+
+    def _client_seed_display(self, game: GameRecord) -> str:
+        combined = f"`{game.client_seed}`"
+        extras = [
+            f"<@{player_id}> `{seed}`"
+            for player_id, seed in game.client_seeds.items()
+            if seed and not is_house_seat(player_id)
+        ]
+        if len(extras) > 1:
+            return f"{combined}\n" + "\n".join(extras)
+        return combined
+
     def joined_table(self, game: GameRecord) -> CasinoPanel:
         title = self._game_title(game)
         mode = self._mode_label(game)
@@ -1007,7 +1039,8 @@ class EmbedFactory:
                 description=(
                     "Choose how bet amounts are interpreted. "
                     "House games use your client seed plus the next server-seed hash below. "
-                    "That hash is locked before you bet; randomizing the client seed does not change it."
+                    "That hash is locked before you bet; randomizing the client seed does not change it. "
+                    "PvP tables combine seated players' client seeds in seat order."
                 ),
             )
             .field("Currency", user.display_currency)
@@ -1247,7 +1280,9 @@ class EmbedFactory:
             .field(
                 "Provably fair",
                 (
-                    "After a game, press **Verify** on the table for seeds and how to replay the result. "
+                    "House games send you a hidden **Fairness lock** (hash, client seed, nonce) when the round starts. "
+                    "PvP uses a public server-seed hash plus each player's `/settings` client seed, joined with `:`. "
+                    "After a game, press **Verify** on the table to replay the result. "
                     "Dice website nonce is `gameNonce:rollIndex`."
                 ),
             )
@@ -1772,11 +1807,17 @@ class EmbedFactory:
         builder = self.builder(
             "Player joined",
             description=(
-                f"{self._mention(joiner_id)} sat at **{self._game_title(game)}** ({mode_label})."
+                f"{self._mention(joiner_id)} sat at **{self._game_title(game)}** ({mode_label}). "
+                "The combined client seed updated; the server seed hash and nonce did not."
             ),
         )
         builder.divider()
         builder.field("Wager", self._wager_usd(game))
+        if game.server_seed_hash:
+            builder.divider()
+            builder.field("Server seed hash", f"`{game.server_seed_hash}`")
+            builder.field("Client seed", self._client_seed_display(game))
+            builder.field("Nonce", str(game.nonce))
         return builder.build()
 
     def _fair_result_label(self, game: GameRecord) -> str:
@@ -1822,7 +1863,7 @@ class EmbedFactory:
             "**What each number means**\n"
             "• **Server seed hash** — shown before the first flip. Fingerprint of the hidden server seed.\n"
             "• **Server seed** — revealed when the match ends. SHA-256 of this must equal the hash.\n"
-            "• **Client seed** — random string for this table. It never changes.\n"
+            "• **Client seed** — seated players' `/settings` seeds joined with `:` in seat order.\n"
             "• **Game nonce** — this table's starting counter. Flip 1 uses this nonce, "
             "flip 2 uses nonce + 1, and so on.\n\n"
             "**How to use the verifier website**\n"
@@ -1841,7 +1882,7 @@ class EmbedFactory:
             .divider()
             .field("Server seed", seed)
             .divider()
-            .field("Client seed", f"`{game.client_seed}`")
+            .field("Client seed", self._client_seed_display(game))
             .divider()
             .field("Game nonce", str(game.nonce))
             .divider()
@@ -1873,7 +1914,7 @@ class EmbedFactory:
             "**What each number means**\n"
             "• **Server seed hash** — shown before anyone rolls. Fingerprint of the hidden server seed.\n"
             "• **Server seed** — revealed when the match ends. SHA-256 of this must equal the hash.\n"
-            "• **Client seed** — random string for this table. It never changes.\n"
+            "• **Client seed** — seated players' `/settings` seeds joined with `:` in seat order.\n"
             "• **Game nonce** — this table's counter. It never changes.\n"
             "• **Roll index** — which `/roll` in the match, starting at **0**.\n\n"
             "**How to use the verifier website**\n"
@@ -1895,7 +1936,7 @@ class EmbedFactory:
             .divider()
             .field("Server seed", seed)
             .divider()
-            .field("Client seed", f"`{game.client_seed}`")
+            .field("Client seed", self._client_seed_display(game))
             .divider()
             .field("Game nonce", str(game.nonce))
             .divider()
@@ -1911,7 +1952,7 @@ class EmbedFactory:
             "**What each number means**\n"
             "• **Server seed hash** — shown when the hand is dealt.\n"
             "• **Server seed** — revealed when the hand ends.\n"
-            "• **Client seed** — random string for this table.\n"
+            "• **Client seed** — your `/settings` client seed for this hand.\n"
             "• **Game nonce** — this table's counter.\n"
             "• **Card index** — which card was drawn, starting at **0**.\n\n"
             "**How to replay a card**\n"
@@ -1925,7 +1966,7 @@ class EmbedFactory:
             .divider()
             .field("Server seed", seed)
             .divider()
-            .field("Client seed", f"`{game.client_seed}`")
+            .field("Client seed", self._client_seed_display(game))
             .divider()
             .field("Game nonce", str(game.nonce))
             .divider()
@@ -1943,7 +1984,7 @@ class EmbedFactory:
             "**What each number means**\n"
             "• **Server seed hash** — shown when you play.\n"
             "• **Server seed** — revealed when the round ends.\n"
-            "• **Client seed** — random string for this round.\n"
+            "• **Client seed** — your `/settings` client seed for this round.\n"
             "• **Game nonce** — this round's counter.\n\n"
             "**How to replay the crash**\n"
             f"HMAC-SHA256(server_seed, `{game.client_seed}:{game.nonce}:limbo`). "
@@ -1958,7 +1999,7 @@ class EmbedFactory:
             .divider()
             .field("Server seed", seed)
             .divider()
-            .field("Client seed", f"`{game.client_seed}`")
+            .field("Client seed", self._client_seed_display(game))
             .divider()
             .field("Game nonce", str(game.nonce))
             .divider()
@@ -1977,7 +2018,7 @@ class EmbedFactory:
             "**What each number means**\n"
             "• **Server seed hash** — shown when the board is dealt.\n"
             "• **Server seed** — revealed when the round ends.\n"
-            "• **Client seed** — random string for this round.\n"
+            "• **Client seed** — your `/settings` client seed for this round.\n"
             "• **Game nonce** — this round's counter.\n\n"
             "**How to replay the mines**\n"
             f"HMAC-SHA256(server_seed, `{game.client_seed}:{game.nonce}:mines:drawIndex`). "
@@ -1991,7 +2032,7 @@ class EmbedFactory:
             .divider()
             .field("Server seed", seed)
             .divider()
-            .field("Client seed", f"`{game.client_seed}`")
+            .field("Client seed", self._client_seed_display(game))
             .divider()
             .field("Game nonce", str(game.nonce))
             .divider()
@@ -2007,7 +2048,7 @@ class EmbedFactory:
             "**What each number means**\n"
             "• **Server seed hash** — shown when the table is listed.\n"
             "• **Server seed** — revealed when the draw completes.\n"
-            "• **Client seed** — random string for this table.\n"
+            "• **Client seed** — seated players' `/settings` seeds joined with `:` in seat order.\n"
             "• **Game nonce** — this table's counter.\n\n"
             "**How to replay the draw**\n"
             f"HMAC-SHA256(server_seed, `{game.client_seed}:{game.nonce}:target:0`). "
@@ -2022,7 +2063,7 @@ class EmbedFactory:
             .divider()
             .field("Server seed", seed)
             .divider()
-            .field("Client seed", f"`{game.client_seed}`")
+            .field("Client seed", self._client_seed_display(game))
             .divider()
             .field("Game nonce", str(game.nonce))
             .divider()

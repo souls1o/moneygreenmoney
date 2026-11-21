@@ -147,6 +147,7 @@ class DocumentMapper:
             "serverSeedHash": game.server_seed_hash,
             "serverSeed": game.server_seed,
             "clientSeed": game.client_seed,
+            "clientSeeds": {key: str(value) for key, value in game.client_seeds.items()},
             "nonce": game.nonce,
             "ledgerIds": game.ledger_ids,
             "createdAt": game.created_at,
@@ -224,6 +225,9 @@ class DocumentMapper:
             server_seed_hash=document.get("serverSeedHash", ""),
             server_seed=document.get("serverSeed"),
             client_seed=document.get("clientSeed") or document["gameId"],
+            client_seeds={
+                str(key): str(value) for key, value in (document.get("clientSeeds") or {}).items()
+            },
             nonce=int(document.get("nonce", 0)),
             ledger_ids=list(document.get("ledgerIds", [])),
             created_at=self._time.to_utc(document.get("createdAt")),
@@ -503,6 +507,7 @@ class DocumentMapper:
             "entriesLamports": {key: int(value) for key, value in jackpot.entries_lamports.items()},
             "serverSeedHash": jackpot.server_seed_hash,
             "clientSeed": jackpot.client_seed,
+            "clientSeeds": {key: str(value) for key, value in jackpot.client_seeds.items()},
             "nonce": jackpot.nonce,
             "fairDigest": jackpot.fair_digest,
             "ledgerIds": list(jackpot.ledger_ids),
@@ -548,6 +553,9 @@ class DocumentMapper:
             server_seed_hash=document.get("serverSeedHash") or "",
             server_seed=document.get("serverSeed"),
             client_seed=document.get("clientSeed") or "",
+            client_seeds={
+                str(key): str(value) for key, value in (document.get("clientSeeds") or {}).items()
+            },
             nonce=int(document.get("nonce") or 0),
             fair_digest=document.get("fairDigest") or "",
             ledger_ids=list(document.get("ledgerIds") or []),

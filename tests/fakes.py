@@ -501,6 +501,7 @@ class MemoryGameRepository:
             server_seed_hash=game.server_seed_hash,
             server_seed=game.server_seed,
             client_seed=game.client_seed,
+            client_seeds=dict(game.client_seeds),
             nonce=game.nonce,
             ledger_ids=list(game.ledger_ids),
             created_at=game.created_at,
@@ -797,6 +798,7 @@ class MemoryJackpotRepository:
         return replace(
             jackpot,
             entries_lamports=dict(jackpot.entries_lamports),
+            client_seeds=dict(jackpot.client_seeds),
             ledger_ids=list(jackpot.ledger_ids),
         )
 

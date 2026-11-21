@@ -49,7 +49,7 @@ from casino.services.validation_service import ValidationService
 from casino.utils.clock import Clock
 from casino.utils.identifiers import IdentifierFactory
 from casino.utils.money import MathService, SolAmount, house_table_cap_lamports
-from casino.utils.rng import ProvablyFairService
+from casino.utils.rng import ProvablyFairService, combined_client_seed
 
 
 class GameService:
@@ -162,12 +162,15 @@ class GameService:
                     server_seed_hash = seeds.server_seed_hash
                     client_seed = seeds.client_seed
                     nonce = seeds.nonce
+                    client_seeds = {player1_id: client_seed} if client_seed else {}
                 else:
+                    creator = await self._user_service.ensure_fairness(player1_id, session=uow.session)
                     commitment = self._rng.commit()
                     server_seed = commitment.server_seed
                     server_seed_hash = commitment.server_seed_hash
-                    client_seed = self._rng.client_seed()
+                    client_seed = creator.fair_client_seed
                     nonce = await self._house.take_next_fair_nonce()
+                    client_seeds = {player1_id: client_seed} if client_seed else {}
                 game = GameRecord(
                     game_id=game_id,
                     status=GameStatus.PENDING,
@@ -184,6 +187,7 @@ class GameService:
                     server_seed_hash=server_seed_hash,
                     server_seed=server_seed,
                     client_seed=client_seed,
+                    client_seeds=client_seeds,
                     nonce=nonce,
                     max_players=max_players if game_type in {GameType.DICE, GameType.TARGET} else 2,
                     first_to=first_to,
@@ -289,6 +293,8 @@ class GameService:
                     raise GameError("That seat was taken or the game is no longer open.")
                 claimed.ledger_ids.append(debit.ledger_entry.entry_id)
                 claimed.record_wager(player_id, bet.lamports)
+                joiner = await self._user_service.ensure_fairness(player_id, session=uow.session)
+                self._attach_client_seed(claimed, player_id, joiner.fair_client_seed)
                 saved = await self._persist_or_start(claimed, usd_price, session=uow.session)
             self._logger.info("game_seat_taken", side=join_side.value, playerId=player_id)
         return saved
@@ -767,6 +773,12 @@ class GameService:
             await self._games.clear_channel_delete_at(game.game_id)
             seen.add(channel_id)
         return closed
+
+    def _attach_client_seed(self, game: GameRecord, player_id: str, seed: str) -> None:
+        if is_house_seat(player_id) or not seed:
+            return
+        game.client_seeds[player_id] = seed
+        game.client_seed = combined_client_seed(game.client_seeds, game.human_player_ids())
 
     async def _persist_or_start(self, game: GameRecord, usd_price: Decimal, *, session) -> GameRecord:
         self._sync_auto_flip(game, self._clock.now())

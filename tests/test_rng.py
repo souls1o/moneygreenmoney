@@ -1,5 +1,5 @@
 from casino.domain.enums import CoinSide
-from casino.utils.rng import FairRandomService, ProvablyFairService
+from casino.utils.rng import FairRandomService, ProvablyFairService, combined_client_seed
 
 
 class TestFairRandomService:
@@ -78,3 +78,8 @@ class TestProvablyFairService:
         assert 1 <= first.die_b <= 6
         other = fair.resolve_dice("seed", "client", 3, 1)
         assert other.digest != first.digest
+
+
+def test_combined_client_seed_uses_seat_order() -> None:
+    assert combined_client_seed({"b": "B", "a": "A"}, ["a", "b"]) == "A:B"
+    assert combined_client_seed({"a": "A"}, ["a", "house-1"]) == "A"
