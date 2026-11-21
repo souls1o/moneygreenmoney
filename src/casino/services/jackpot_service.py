@@ -72,6 +72,9 @@ class JackpotService:
     async def attach_listing(self, jackpot_id: str, channel_id: str, message_id: str) -> None:
         await self._jackpots.set_listing_ref(jackpot_id, channel_id, message_id)
 
+    async def attach_history(self, jackpot_id: str, message_id: str) -> None:
+        await self._jackpots.set_history_ref(jackpot_id, message_id)
+
     async def ensure_open(
         self,
         guild_id: str,

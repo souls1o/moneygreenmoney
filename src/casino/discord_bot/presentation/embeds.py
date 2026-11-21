@@ -2137,14 +2137,23 @@ class EmbedFactory:
 
     async def _blackjack_balance_line(self, game: GameRecord, *, conceal_payout: bool = False) -> str:
         try:
-            user = await self._container.users.get_or_create(game.creator_id)
+            user = await self._container.users.get(game.creator_id)
         except Exception:
             return ""
+        if user is None:
+            return ""
         lamports = user.sol_balance.lamports
+        if game.status is GameStatus.ACTIVE and game.is_vs_house():
+            lamports += game.wager_for(game.creator_id).lamports
         if conceal_payout:
-            lamports -= int(game.winner_payout_lamports or 0)
+            stake = game.wager_for(game.creator_id).lamports
+            extra = max(int(game.winner_payout_lamports or 0) - stake, 0)
+            lamports -= extra
         sol = SolAmount.from_lamports(max(lamports, 0))
-        quote = self._container.price.peek_cache()
+        try:
+            quote = await self._container.price.get_quote(allow_stale=True)
+        except Exception:
+            quote = self._container.price.peek_cache()
         if quote is None:
             return f"Balance **{self._container.math.format_sol(sol)} SOL**"
         usd = self._container.math.sol_to_fiat(sol, quote.sol_price("USD"))

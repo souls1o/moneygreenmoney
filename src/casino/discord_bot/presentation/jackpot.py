@@ -26,6 +26,9 @@ class JackpotPresenter:
             config = await self._container.guild_configs.get(str(guild.id))
             if config.jackpot_channel_id:
                 await self.ensure(str(guild.id))
+            live = await self._container.jackpots.live_for_guild(str(guild.id))
+            if live is not None and live.status is JackpotStatus.SHOWING:
+                await self._post_history(live)
 
     async def ensure(self, guild_id: str, *, channel_id: str | None = None) -> discord.Message | None:
         config = await self._container.guild_configs.get(guild_id)
@@ -136,30 +139,45 @@ class JackpotPresenter:
             panel.stop()
 
     async def _post_history(self, jackpot: JackpotRecord) -> None:
-        if jackpot.jackpot_id in self._history_posted:
+        if jackpot.history_message_id or jackpot.jackpot_id in self._history_posted:
             return
-        if jackpot.status is not JackpotStatus.SHOWING or not jackpot.guild_id:
+        if jackpot.status not in {JackpotStatus.SHOWING, JackpotStatus.COMPLETED}:
+            return
+        if not jackpot.guild_id:
             return
         config = await self._container.guild_configs.get(jackpot.guild_id)
-        if not config.jackpot_history_channel_id:
+        history_channel_id = config.jackpot_history_channel_id
+        if not history_channel_id:
+            self._logger.warning("jackpot_history_channel_unset", guildId=jackpot.guild_id)
             return
-        channel = await self._text_channel(config.jackpot_history_channel_id)
+        channel = await self._messageable(history_channel_id)
         if channel is None:
+            self._logger.warning(
+                "jackpot_history_channel_missing",
+                guildId=jackpot.guild_id,
+                channelId=history_channel_id,
+            )
             return
         panel = self._embeds.jackpot_table(jackpot, history=True)
         try:
-            await channel.send(**panel.send_kwargs())
+            posted = await channel.send(**panel.send_kwargs())
             panel.stop()
             self._history_posted.add(jackpot.jackpot_id)
+            await self._container.jackpots.attach_history(jackpot.jackpot_id, str(posted.id))
+            jackpot.history_message_id = str(posted.id)
         except discord.HTTPException:
             self._logger.exception("jackpot_history_post_failed", jackpotId=jackpot.jackpot_id)
             panel.stop()
 
     async def _text_channel(self, channel_id: str) -> discord.TextChannel | None:
+        fetched = await self._messageable(channel_id)
+        return fetched if isinstance(fetched, discord.TextChannel) else None
+
+    async def _messageable(self, channel_id: str) -> discord.abc.Messageable | None:
         fetched = self._bot.get_channel(int(channel_id))
         if fetched is None:
             try:
                 fetched = await self._bot.fetch_channel(int(channel_id))
             except discord.HTTPException:
                 return None
-        return fetched if isinstance(fetched, discord.TextChannel) else None
+        return fetched if isinstance(fetched, discord.abc.Messageable) else None

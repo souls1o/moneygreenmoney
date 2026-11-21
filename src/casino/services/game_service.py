@@ -498,6 +498,58 @@ class GameService:
             raise GameError("Only the creator can cancel this game.")
         return await self._refund_open_game(game, GameStatus.CANCELLED, "Game cancelled")
 
+    async def abort_unresolved_vs_house(self, game_id: str, *, reason: str) -> GameRecord:
+        game = await self.get(game_id)
+        if not game.is_vs_house():
+            raise GameError("Only house games can be aborted.")
+        if game.status in {GameStatus.COMPLETED, GameStatus.CANCELLED, GameStatus.EXPIRED}:
+            return game
+        quote = await self._prices.get_quote(allow_stale=True)
+        usd_price = quote.sol_price("USD")
+        now = self._clock.now()
+        with LogContext.bind(userId=game.creator_id, gameId=game_id):
+            async with self._uow.begin() as uow:
+                current = await self._games.find_by_id(game_id, session=uow.session)
+                if current is None:
+                    raise NotFoundError("That game was not found.")
+                if current.status in {GameStatus.COMPLETED, GameStatus.CANCELLED, GameStatus.EXPIRED}:
+                    return current
+                for player_id in current.human_player_ids():
+                    stake = current.wager_for(player_id)
+                    if stake.is_zero():
+                        continue
+                    mutation = await self._balances.credit(
+                        user_id=player_id,
+                        amount=stake,
+                        entry_type=LedgerEntryType.REFUND,
+                        transaction_type=TransactionType.REFUND,
+                        price_usd=usd_price,
+                        description=f"{reason} {current.game_id}",
+                        game_id=current.game_id,
+                        session=uow.session,
+                    )
+                    current.ledger_ids.append(mutation.ledger_entry.entry_id)
+                house_stake = current.wager_for(HOUSE_USER_ID)
+                if not house_stake.is_zero():
+                    _treasury, house_refund = await self._balances.credit_house_reserve(
+                        amount=house_stake,
+                        entry_type=LedgerEntryType.REFUND,
+                        transaction_type=TransactionType.REFUND,
+                        price_usd=usd_price,
+                        description=f"{reason} house {current.game_id}",
+                        game_id=current.game_id,
+                        session=uow.session,
+                    )
+                    current.ledger_ids.append(house_refund.entry_id)
+                current.status = GameStatus.CANCELLED
+                current.resolved_at = now
+                current.expires_at = None
+                replaced = await self._games.replace(current, session=uow.session)
+                if not replaced:
+                    raise GameError("The game could not be refunded due to a concurrent change.")
+            self._logger.info("vs_house_aborted", reason=reason)
+        return current
+
     async def leave_game(self, game_id: str, player_id: str) -> GameRecord:
         existing = await self._require_open_game(game_id)
         if is_house_seat(player_id) or not existing.has_player(player_id):

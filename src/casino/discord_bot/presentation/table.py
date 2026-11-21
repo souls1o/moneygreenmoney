@@ -278,22 +278,42 @@ class GameTablePresenter:
             game_type=GameType.BLACKJACK,
             guild_id=source.guild_id,
         )
-        if source.guild_id:
-            await self._container.games.attach_guild(game.game_id, source.guild_id)
-        panel = await self._embeds.blackjack_panel(game)
-        await self._edit_redeal_table(source, panel, interaction=interaction, table_message=table_message)
-        channel_id = source.channel_id
-        message_id = source.message_id
-        if table_message is not None:
-            channel_id = str(table_message.channel.id)
-            message_id = str(table_message.id)
-        if channel_id and message_id:
-            await self._container.games.attach_listing(game.game_id, channel_id, message_id)
-        if game.status is GameStatus.COMPLETED:
-            await self.on_resolved(game, interaction=interaction)
-        if interaction is not None:
-            await self.send_fairness_lock(interaction, game)
-        return game
+        posted = False
+        try:
+            if source.guild_id:
+                await self._container.games.attach_guild(game.game_id, source.guild_id)
+            panel = await self._embeds.blackjack_panel(game)
+            posted = await self._edit_redeal_table(
+                source, panel, interaction=interaction, table_message=table_message
+            )
+            if not posted:
+                await self._container.games.abort_unresolved_vs_house(
+                    game.game_id, reason="Blackjack table update failed"
+                )
+                raise GameError("Could not update the blackjack table. Your bet was returned.")
+            channel_id = source.channel_id
+            message_id = source.message_id
+            if table_message is not None:
+                channel_id = str(table_message.channel.id)
+                message_id = str(table_message.id)
+            if channel_id and message_id:
+                await self._container.games.attach_listing(game.game_id, channel_id, message_id)
+            if game.status is GameStatus.COMPLETED:
+                await self.on_resolved(game, interaction=interaction)
+            if interaction is not None:
+                await self.send_fairness_lock(interaction, game)
+            return game
+        except GameError:
+            raise
+        except Exception:
+            if not posted:
+                try:
+                    await self._container.games.abort_unresolved_vs_house(
+                        game.game_id, reason="Blackjack redeal failed"
+                    )
+                except Exception:
+                    self._logger.exception("blackjack_redeal_abort_failed", gameId=game.game_id)
+            raise
 
     async def handle_limbo_redeal(
         self,

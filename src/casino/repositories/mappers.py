@@ -522,6 +522,8 @@ class DocumentMapper:
             document["channelId"] = jackpot.channel_id
         if jackpot.message_id:
             document["messageId"] = jackpot.message_id
+        if jackpot.history_message_id:
+            document["historyMessageId"] = jackpot.history_message_id
         if jackpot.winner_id:
             document["winnerId"] = jackpot.winner_id
         if jackpot.ticket is not None:
@@ -546,6 +548,7 @@ class DocumentMapper:
             entries_lamports={str(key): int(value) for key, value in entries.items()},
             channel_id=document.get("channelId"),
             message_id=document.get("messageId"),
+            history_message_id=document.get("historyMessageId"),
             winner_id=document.get("winnerId"),
             winner_payout_lamports=int(document.get("winnerPayoutLamports") or 0),
             house_fee_lamports=int(document.get("houseFeeLamports") or 0),

@@ -353,12 +353,16 @@ class ComponentRouterCog(commands.Cog):
         await self._tables().on_cancelled(game, interaction=interaction)
 
     async def _on_blackjack(self, interaction: discord.Interaction, game_id: str, action) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer()
         with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
             await self._tables().handle_blackjack_action(
                 game_id, str(interaction.user.id), action, interaction=interaction
             )
 
     async def _on_blackjack_new(self, interaction: discord.Interaction, game_id: str) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer()
         with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
             await self._tables().handle_blackjack_redeal(
                 game_id, str(interaction.user.id), interaction=interaction

@@ -727,6 +727,10 @@ class MemoryJackpotRepository:
         jackpot.channel_id = channel_id
         jackpot.message_id = message_id
 
+    async def set_history_ref(self, jackpot_id: str, message_id: str, session=None) -> None:
+        jackpot = self.items[jackpot_id]
+        jackpot.history_message_id = message_id
+
     async def list_due(self, now, session=None) -> list[JackpotRecord]:
         return [
             self._clone(jackpot)

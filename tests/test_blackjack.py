@@ -133,6 +133,21 @@ async def test_create_blackjack_seats_house_and_deals() -> None:
 
 
 @pytest.mark.asyncio
+async def test_abort_unresolved_blackjack_refunds_player_and_house() -> None:
+    harness = _harness([T, SIX, NINE, FIVE])
+    game = await harness.service.create_game(
+        player1_id="1",
+        fiat_amount=Decimal("5"),
+        side=CoinSide.HEADS,
+        game_type=GameType.BLACKJACK,
+    )
+    aborted = await harness.service.abort_unresolved_vs_house(game.game_id, reason="table update failed")
+    assert aborted.status is GameStatus.CANCELLED
+    assert harness.users_repo.users["1"].sol_balance_lamports == 10_000_000_000
+    assert harness.house_repo.record.sol_balance_lamports == 5_000_000_000
+
+
+@pytest.mark.asyncio
 async def test_hit_bust_pays_house() -> None:
     harness = _harness([T, SIX, NINE, FIVE, T])
     game = await harness.service.create_game(

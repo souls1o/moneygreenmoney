@@ -614,6 +614,7 @@ class JackpotRecord:
     entries_lamports: dict[str, int] = field(default_factory=dict)
     channel_id: str | None = None
     message_id: str | None = None
+    history_message_id: str | None = None
     winner_id: str | None = None
     winner_payout_lamports: int = 0
     house_fee_lamports: int = 0

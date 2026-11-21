@@ -70,6 +70,18 @@ class JackpotRepository(MongoRepository):
             session=session,
         )
 
+    async def set_history_ref(
+        self,
+        jackpot_id: str,
+        message_id: str,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> None:
+        await self.collection.update_one(
+            {"jackpotId": jackpot_id},
+            {"$set": {"historyMessageId": message_id}},
+            session=session,
+        )
+
     async def list_due(self, now: datetime) -> list[JackpotRecord]:
         cursor = self.collection.find(
             {
