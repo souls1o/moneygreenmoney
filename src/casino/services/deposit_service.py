@@ -96,6 +96,15 @@ class DepositService:
         parsed = await self._load_incoming(signature, target.address)
         if parsed is None:
             return None
+        if self._is_internal_transfer(parsed):
+            self._logger.info(
+                "internal_transfer_ignored",
+                txSignature=parsed.signature,
+                source=parsed.source,
+                destination=parsed.destination,
+                amountLamports=parsed.lamports,
+            )
+            return None
         if target.is_house:
             await self.credit_house(parsed)
             return None
@@ -159,6 +168,15 @@ class DepositService:
         existing = await self._transactions.find_by_signature(parsed.signature)
         if existing is not None:
             return
+        if self._is_internal_transfer(parsed):
+            self._logger.info(
+                "internal_transfer_ignored",
+                txSignature=parsed.signature,
+                source=parsed.source,
+                destination=parsed.destination,
+                amountLamports=parsed.lamports,
+            )
+            return
         if parsed.amount.is_zero():
             raise DepositError("The transfer amount is zero.")
         credited_amount = parsed.amount
@@ -214,6 +232,13 @@ class DepositService:
             return
         if target.user_id:
             await self.sweep_user(target.user_id)
+
+    def _is_internal_transfer(self, parsed: ParsedIncomingTransfer) -> bool:
+        source = (parsed.source or "").strip()
+        if not source:
+            return False
+        owned = {addr for addr in (self._rpc.house_address, self._rpc.super_address) if addr}
+        return source in owned
 
     async def parse_signature(self, signature: str, destination: str) -> ParsedIncomingTransfer | None:
         self.require_configured()

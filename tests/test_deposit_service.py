@@ -136,6 +136,26 @@ async def test_house_deposit_credits_reserves() -> None:
 
 
 @pytest.mark.asyncio
+async def test_house_credit_ignores_super_wallet_settlement() -> None:
+    service, _users, house_repo, ledger_repo, rpc, _clock = _service()
+    parsed = ParsedIncomingTransfer(
+        signature="sig-settle",
+        lamports=2_000_000_000,
+        destination=rpc.house_address,
+        source=rpc.super_address,
+        memo=None,
+    )
+    await service.credit_house(parsed)
+    credited = await service.ingest_signature(
+        parsed.signature,
+        DepositWatchTarget(address=rpc.house_address, is_house=True),
+    )
+    assert credited is None
+    assert house_repo.record.sol_balance_lamports == 0
+    assert ledger_repo.entries == []
+
+
+@pytest.mark.asyncio
 async def test_known_house_deposit_stays_on_house_wallet() -> None:
     service, _users, _house, _ledger, rpc, _clock = _service()
     parsed = ParsedIncomingTransfer(

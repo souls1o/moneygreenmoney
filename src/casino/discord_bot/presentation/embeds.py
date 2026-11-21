@@ -89,7 +89,8 @@ class EmbedFactory:
         address = self._container.deposits.house_address()
         builder = (
             self.builder("House Balance")
-            .field("USD", f"`{math.format_fiat_symbol(usd, 'USD')}`")
+            .field("SOL", f"`{math.format_sol(house)} SOL`")
+            .field("", f"**{math.format_fiat_symbol(usd, 'USD')}** (`{math.format_sol(house)} SOL`)")
         )
         if address:
             builder.button("View on blockchain", url=f"https://solscan.io/account/{address}")
