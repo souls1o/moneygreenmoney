@@ -7,6 +7,7 @@ import pytest
 from casino.domain.enums import GameStatus, GameType
 from casino.domain.records import HOUSE_USER_ID, GameRecord
 from casino.services.custody_service import CustodyService
+from tests.fakes import MemoryHouseRepository
 from casino.utils.money import SolAmount
 
 
@@ -49,6 +50,27 @@ async def test_settle_game_sends_losses_to_house_then_wins_from_house() -> None:
     await custody.settle_game(game)
     assert rpc.to_house == [("2", 50_000_000)]
     assert rpc.to_player == [("1", 47_000_000)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_sync_house_wallet_aligns_to_book() -> None:
+    class AlignRpc:
+        is_configured = True
+        has_house_wallet = True
+        aligned: list[int] = []
+
+        async def align_house_to_book(self, book_lamports: int) -> str | None:
+            self.aligned.append(book_lamports)
+            return "align-sig"
+
+    rpc = AlignRpc()
+    house = MemoryHouseRepository()
+    house.record.sol_balance_lamports = 3_000_000_000
+    custody = CustodyService(rpc, house)  # type: ignore[arg-type]
+    signature = await custody.sync_house_wallet()
+    assert signature == "align-sig"
+    assert rpc.aligned == [3_000_000_000]
 
 
 @pytest.mark.asyncio

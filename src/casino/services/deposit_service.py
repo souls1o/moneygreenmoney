@@ -9,6 +9,7 @@ from casino.errors import AlreadyProcessedError, DepositError, FeatureDisabledEr
 from casino.logging.logger import LogContext, get_logger
 from casino.repositories.transaction_repository import TransactionRepository
 from casino.services.balance_service import BalanceService
+from casino.services.custody_service import CustodyService
 from casino.services.investor_service import InvestorService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
@@ -25,7 +26,7 @@ class DepositWatchTarget:
 
 
 class DepositService:
-    """Credit deposits by destination address, then sweep SOL into the super wallet."""
+    """Credit deposits by destination address. Player SOL sweeps to super; house SOL stays put."""
 
     def __init__(
         self,
@@ -39,6 +40,7 @@ class DepositService:
         normalizer: TextNormalizer,
         house_repository=None,
         investors: InvestorService | None = None,
+        custody: CustodyService | None = None,
     ) -> None:
         self._users = user_service
         self._balances = balance_service
@@ -50,6 +52,7 @@ class DepositService:
         self._normalizer = normalizer
         self._house = house_repository
         self._investors = investors
+        self._custody = custody
         self._on_credited = None
         self._on_house_credited = None
         self._logger = get_logger("casino.deposit")
@@ -95,7 +98,6 @@ class DepositService:
             return None
         if target.is_house:
             await self.credit_house(parsed)
-            await self.sweep_house()
             return None
         user = await self._users.get_by_deposit_address(target.address)
         if user is None:
@@ -176,6 +178,7 @@ class DepositService:
                         description=f"SOL house deposit {parsed.signature}",
                         solana_signature=parsed.signature,
                         session=uow.session,
+                        align_wallet=False,
                     )
                     if self._investors is not None:
                         await self._investors.on_founder_inflow(
@@ -199,12 +202,17 @@ class DepositService:
         return await self._rpc.collect_user_into_super(discord_id)
 
     async def sweep_house(self) -> str | None:
-        return await self._rpc.collect_house_into_super()
+        return await self.sync_house_wallet()
+
+    async def sync_house_wallet(self) -> str | None:
+        if self._custody is None:
+            return None
+        return await self._custody.sync_house_wallet()
 
     async def sweep_target(self, target: DepositWatchTarget) -> None:
         if target.is_house:
-            await self.sweep_house()
-        elif target.user_id:
+            return
+        if target.user_id:
             await self.sweep_user(target.user_id)
 
     async def parse_signature(self, signature: str, destination: str) -> ParsedIncomingTransfer | None:

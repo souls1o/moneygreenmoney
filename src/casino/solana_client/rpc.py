@@ -28,6 +28,26 @@ def sweepable_lamports(balance: int, rent: int, *, fee: int = SWEEP_FEE_LAMPORTS
     return max(int(balance) - keep, 0)
 
 
+def house_align_transfer(
+    *,
+    house_balance: int,
+    book_lamports: int,
+    rent: int,
+    fee: int = SWEEP_FEE_LAMPORTS,
+) -> tuple[str, int] | None:
+    """Move SOL so the house address matches `/housebal`, keeping rent on the account."""
+    target = max(int(book_lamports), int(rent))
+    current = int(house_balance)
+    if current > target:
+        amount = current - target - max(int(fee), 0)
+        if amount <= 0:
+            return None
+        return ("to_super", amount)
+    if current < target:
+        return ("to_house", target - current)
+    return None
+
+
 class SolanaRpcUnavailableError(RuntimeError):
     """RPC returned a rate-limit, HTML, or otherwise unusable payload."""
 
@@ -145,7 +165,7 @@ class SolanaRpcGateway:
                 "solana_wallet_unconfigured",
                 detail=(
                     "Set DEPOSIT_MASTER_SECRET and SUPER_WALLET_PRIVATE_KEY for player deposits. "
-                    "SOLANA_PRIVATE_KEY is only the house deposit address."
+                    "SOLANA_PRIVATE_KEY is the house wallet that should match /housebal."
                 ),
             )
             return
@@ -253,12 +273,51 @@ class SolanaRpcGateway:
             raise RuntimeError(f"The Solana transaction failed: {status.err}")
 
     async def collect_house_into_super(self) -> str | None:
-        if not self.has_house_wallet or self._super_keypair is None:
+        """House book SOL stays on the house wallet. Use align_house_to_book instead."""
+        return None
+
+    async def align_house_to_book(self, book_lamports: int) -> str | None:
+        if not self.has_house_wallet or self._super_keypair is None or self._house_keypair is None:
             return None
+        if self._house_keypair.pubkey() == self._super_keypair.pubkey():
+            return None
+        house_address = str(self._house_keypair.pubkey())
         try:
-            return await self.sweep_to_super(self.house_keypair())
+            rent = await self.get_rent_exempt_lamports()
+            current = await self.get_balance(house_address)
+            move = house_align_transfer(
+                house_balance=current,
+                book_lamports=book_lamports,
+                rent=rent,
+            )
+            if move is None:
+                return None
+            direction, amount_lamports = move
+            amount = SolAmount.from_lamports(amount_lamports)
+            if direction == "to_super":
+                signature = await self._pay_from_keypair(
+                    self._house_keypair,
+                    str(self._super_keypair.pubkey()),
+                    amount,
+                    label="house_to_super",
+                )
+            else:
+                signature = await self._pay_from_keypair(
+                    self._super_keypair,
+                    house_address,
+                    amount,
+                    label="super_to_house",
+                )
+            self._logger.info(
+                "house_wallet_aligned",
+                direction=direction,
+                amountLamports=amount_lamports,
+                bookLamports=int(book_lamports),
+                txSignature=signature,
+            )
+            return signature
         except Exception:
-            self._logger.exception("house_sweep_failed")
+            self._logger.exception("house_wallet_align_failed", bookLamports=int(book_lamports))
             return None
 
     async def collect_user_into_super(self, discord_id: str) -> str | None:
@@ -299,14 +358,40 @@ class SolanaRpcGateway:
     async def send_from_super(self, destination: str, amount: SolAmount) -> str:
         if self._super_keypair is None:
             raise RuntimeError("Super wallet is not configured.")
-        dest = Pubkey.from_string(destination)
-        if dest == self._super_keypair.pubkey():
+        if Pubkey.from_string(destination) == self._super_keypair.pubkey():
             raise ValueError("Cannot withdraw to the custody wallet.")
+        return await self._pay_from_keypair(
+            self._super_keypair, destination, amount, label="withdrawal_sent"
+        )
+
+    async def send_from_house(self, destination: str, amount: SolAmount) -> str:
+        if self._house_keypair is None:
+            raise RuntimeError("House wallet is not configured.")
+        if Pubkey.from_string(destination) == self._house_keypair.pubkey():
+            raise ValueError("Cannot withdraw to the house wallet.")
+        return await self._pay_from_keypair(
+            self._house_keypair, destination, amount, label="house_withdrawal_sent"
+        )
+
+    async def send_from_keypair(self, source: Keypair, destination: str, amount: SolAmount) -> str:
+        return await self._pay_from_keypair(source, destination, amount, label="signed_transfer_sent")
+
+    async def _pay_from_keypair(
+        self,
+        source: Keypair,
+        destination: str,
+        amount: SolAmount,
+        *,
+        label: str,
+    ) -> str:
+        dest = Pubkey.from_string(destination)
+        if dest == source.pubkey():
+            raise ValueError("Cannot transfer to the same wallet.")
         last_error: Exception | None = None
         for attempt in range(3):
             try:
                 transaction = self._transfers.build(
-                    payer=self._super_keypair,
+                    payer=source,
                     recent_blockhash=await self.get_latest_blockhash(),
                     legs=[TransferLeg(destination=dest, amount=amount)],
                 )
@@ -314,8 +399,9 @@ class SolanaRpcGateway:
                     transaction, skip_preflight=False, confirm=True
                 )
                 self._logger.info(
-                    "withdrawal_sent",
+                    label,
                     destination=destination,
+                    source=str(source.pubkey()),
                     amountLamports=amount.lamports,
                     txSignature=signature,
                     attempt=attempt + 1,
@@ -324,7 +410,8 @@ class SolanaRpcGateway:
             except Exception as exc:
                 last_error = exc
                 self._logger.warning(
-                    "withdrawal_send_retry",
+                    "signed_transfer_retry",
+                    label=label,
                     attempt=attempt + 1,
                     error=str(exc),
                 )

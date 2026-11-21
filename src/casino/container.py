@@ -27,6 +27,7 @@ from casino.repositories.user_repository import UserRepository
 from casino.services.admin_service import AdminService
 from casino.services.affiliate_service import AffiliateService
 from casino.services.balance_service import BalanceService
+from casino.services.custody_service import CustodyService, HouseWalletSyncingUnitOfWorkFactory
 from casino.services.deposit_service import DepositService
 from casino.services.game_service import GameService
 from casino.services.guild_config_service import GuildConfigService
@@ -56,6 +57,7 @@ from casino.utils.identifiers import IdentifierFactory
 from casino.utils.money import MathService
 from casino.utils.rng import ProvablyFairService
 from casino.utils.text import TextNormalizer
+from casino.workers.deposit_stream_worker import DepositStreamWorker
 from casino.workers.deposit_worker import DepositMonitorWorker
 from casino.workers.expiry_worker import GameExpiryWorker
 from casino.workers.locks import DistributedLockService
@@ -95,6 +97,7 @@ class AppContainer:
     tips: TipService
     workers: WorkerScheduler
     deposit_worker: DepositMonitorWorker
+    deposit_stream_worker: DepositStreamWorker
     expiry_worker: GameExpiryWorker
     rain_worker: RainExpiryWorker
     jackpot_worker: JackpotWorker
@@ -107,6 +110,10 @@ class AppContainer:
         await IndexInstaller(self.mongo).install()
         await self.solana.connect()
         await self.price.get_quote(allow_stale=False)
+        try:
+            await self.deposits.sync_house_wallet()
+        except Exception:
+            get_logger("casino.app").exception("house_wallet_startup_sync_failed")
         self.workers.start(
             "game-expiry",
             self.settings.expiry_poll_interval_seconds,
@@ -128,6 +135,8 @@ class AppContainer:
                 self.settings.deposit_poll_interval_seconds,
                 self.deposit_worker.tick,
             )
+            if self.settings.enable_deposit_stream:
+                self.workers.start_background("deposit-stream", self.deposit_stream_worker.run)
         logger.info(
             "application_started",
             environment=self.settings.environment,
@@ -170,6 +179,9 @@ class ContainerFactory:
         lock_repo = LockRepository(mongo)
         rate_repo = RateLimitRepository(mongo)
         jackpots_repo = JackpotRepository(mongo, mapper)
+
+        custody = CustodyService(solana, house_repo)
+        uow = HouseWalletSyncingUnitOfWorkFactory(uow, custody)
 
         ledger = LedgerService(ledger_repo, identifiers, clock)
         balances = BalanceService(users_repo, tx_repo, house_repo, ledger, identifiers, clock)
@@ -236,6 +248,7 @@ class ContainerFactory:
             TextNormalizer(),
             house_repo,
             investors,
+            custody,
         )
         address_validator = SolanaAddressValidator()
         settings_service = SettingsService(users, validation, address_validator, settings)
@@ -255,6 +268,7 @@ class ContainerFactory:
         lock_service = DistributedLockService(lock_repo, clock, identifiers)
         workers = WorkerScheduler(lock_service)
         deposit_worker = DepositMonitorWorker(deposits, solana, cursor_repo, clock, settings)
+        deposit_stream_worker = DepositStreamWorker(deposits, settings)
         expiry_worker = GameExpiryWorker(games)
         rains_repo = RainRepository(mongo, mapper)
         rains = RainService(
@@ -338,6 +352,7 @@ class ContainerFactory:
             tips=tips,
             workers=workers,
             deposit_worker=deposit_worker,
+            deposit_stream_worker=deposit_stream_worker,
             expiry_worker=expiry_worker,
             rain_worker=rain_worker,
             jackpot_worker=jackpot_worker,

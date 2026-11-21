@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     mongodb_database: str = "betbetbet"
 
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
+    solana_ws_url: str | None = None
     solana_commitment: str = "confirmed"
     solana_private_key: SecretStr | None = None
     super_wallet_private_key: SecretStr | None = None
@@ -55,6 +56,7 @@ class Settings(BaseSettings):
 
     enable_withdrawals: bool = False
     enable_deposit_monitor: bool = True
+    enable_deposit_stream: bool = True
 
     log_level: str = "INFO"
     log_json: bool = False
@@ -80,6 +82,15 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("solana_ws_url", mode="before")
+    @classmethod
+    def blank_ws_to_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("developer_user_id", mode="before")
     @classmethod
     def blank_developer_to_none(cls, value: object) -> object:
@@ -97,6 +108,13 @@ class Settings(BaseSettings):
     @property
     def has_solana_wallet(self) -> bool:
         return self.super_wallet_private_key is not None and self.deposit_master_secret is not None
+
+    def resolved_solana_ws_url(self) -> str:
+        from casino.solana_client.websocket_url import websocket_url_from_rpc
+
+        if self.solana_ws_url:
+            return self.solana_ws_url.strip()
+        return websocket_url_from_rpc(self.solana_rpc_url)
 
     @model_validator(mode="after")
     def validate_currency_support(self) -> Self:

@@ -82,13 +82,12 @@ class WithdrawalService:
         payout = amount
 
         await self._rpc.collect_user_into_super(discord_id)
-        await self._rpc.collect_house_into_super()
         super_balance = await self._rpc.get_balance(self._rpc.super_address)
         rent = await self._rpc.get_rent_exempt_lamports()
         needed = payout.lamports + SWEEP_FEE_LAMPORTS + rent
         if super_balance < needed:
             raise WithdrawalError(
-                "The house wallet does not have enough on-chain SOL to pay this withdrawal right now."
+                "The super wallet does not have enough on-chain SOL to pay this withdrawal right now."
             )
 
         quote = await self._prices.get_quote(allow_stale=True)
@@ -177,7 +176,7 @@ def _user_send_error(exc: BaseException) -> str:
     if "blockhash" in detail:
         return "Solana rejected the transaction. Your balance was refunded. Try again."
     if "insufficient" in detail or "no record of a prior credit" in detail:
-        return "The house wallet could not pay this withdrawal. Your balance was refunded."
+        return "The super wallet could not pay this withdrawal. Your balance was refunded."
     if "rate" in detail or "too many" in detail or "forbidden" in detail or "method not found" in detail:
         return "The Solana RPC could not send the withdrawal. Your balance was refunded."
     return "The withdrawal could not be sent. Your balance was refunded."

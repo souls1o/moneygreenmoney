@@ -136,7 +136,7 @@ async def test_house_deposit_credits_reserves() -> None:
 
 
 @pytest.mark.asyncio
-async def test_known_house_deposit_retries_sweep() -> None:
+async def test_known_house_deposit_stays_on_house_wallet() -> None:
     service, _users, _house, _ledger, rpc, _clock = _service()
     parsed = ParsedIncomingTransfer(
         signature="sig-house-stuck",
@@ -152,7 +152,7 @@ async def test_known_house_deposit_retries_sweep() -> None:
         DepositWatchTarget(address=rpc.house_address, is_house=True),
     )
     assert credited is None
-    assert rpc.swept == ["house"]
+    assert rpc.swept == []
 
 
 @pytest.mark.asyncio

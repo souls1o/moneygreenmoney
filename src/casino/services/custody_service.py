@@ -1,20 +1,50 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
+from types import TracebackType
+
+from casino.db.unit_of_work import MongoUnitOfWork, UnitOfWorkFactory
 from casino.domain.records import GameRecord, JackpotRecord, is_house_seat
 from casino.logging.logger import get_logger
+from casino.repositories.house_repository import HouseRepository
 from casino.solana_client.rpc import SolanaRpcGateway
 from casino.utils.money import SolAmount
 
+_house_wallet_dirty: ContextVar[bool] = ContextVar("house_wallet_dirty", default=False)
+
+
+def mark_house_wallet_dirty() -> None:
+    _house_wallet_dirty.set(True)
+
+
+def consume_house_wallet_dirty() -> bool:
+    dirty = _house_wallet_dirty.get()
+    _house_wallet_dirty.set(False)
+    return dirty
+
 
 class CustodyService:
-    """Move SOL between player deposit wallets and the house wallet to match game P&L."""
+    """Keep house-book SOL (including investor funds) on the house wallet; players stay in super."""
 
-    def __init__(self, rpc: SolanaRpcGateway | None = None) -> None:
+    def __init__(
+        self,
+        rpc: SolanaRpcGateway | None = None,
+        house_repository: HouseRepository | None = None,
+    ) -> None:
         self._rpc = rpc
+        self._house = house_repository
         self._logger = get_logger("casino.custody")
 
     def is_live(self) -> bool:
         return self._rpc is not None and self._rpc.is_configured
+
+    async def sync_house_wallet(self) -> str | None:
+        if not self.is_live() or self._house is None or self._rpc is None:
+            return None
+        if not self._rpc.has_house_wallet:
+            return None
+        book = (await self._house.get()).sol_balance_lamports
+        return await self._rpc.align_house_to_book(book)
 
     async def settle_player_pnl(self, discord_id: str, profit_lamports: int) -> None:
         if not self.is_live() or profit_lamports == 0 or is_house_seat(discord_id):
@@ -101,3 +131,35 @@ class CustodyService:
         for player_id, profit in moves:
             if profit > 0:
                 await self.settle_player_pnl(player_id, profit)
+
+
+class HouseWalletSyncingUnitOfWorkFactory:
+    """After a committed house-book change, move SOL between house and super to match `/housebal`."""
+
+    def __init__(self, inner: UnitOfWorkFactory, custody: CustodyService) -> None:
+        self._inner = inner
+        self._custody = custody
+
+    def begin(self) -> HouseWalletSyncingUnitOfWork:
+        return HouseWalletSyncingUnitOfWork(self._inner.begin(), self._custody)
+
+
+class HouseWalletSyncingUnitOfWork:
+    def __init__(self, inner: MongoUnitOfWork, custody: CustodyService) -> None:
+        self._inner = inner
+        self._custody = custody
+
+    async def __aenter__(self) -> MongoUnitOfWork:
+        return await self._inner.__aenter__()
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self._inner.__aexit__(exc_type, exc, tb)
+        if exc_type is None and consume_house_wallet_dirty():
+            await self._custody.sync_house_wallet()
+        else:
+            _house_wallet_dirty.set(False)

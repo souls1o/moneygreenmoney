@@ -1,4 +1,4 @@
-"""Generate a Solana keypair for the house deposit wallet.
+"""Generate a Solana keypair for the house wallet (/housebal).
 
 Run from the project venv:
 

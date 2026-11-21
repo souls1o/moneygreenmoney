@@ -17,6 +17,9 @@ class WorkerScheduler:
     def start(self, name: str, interval_seconds: int, callback: Callable[[], Awaitable[None]]) -> None:
         self._tasks.append(asyncio.create_task(self._run(name, interval_seconds, callback), name=name))
 
+    def start_background(self, name: str, callback: Callable[[], Awaitable[None]]) -> None:
+        self._tasks.append(asyncio.create_task(self._run_forever(name, callback), name=name))
+
     async def stop(self) -> None:
         self._stopping.set()
         for task in self._tasks:
@@ -47,3 +50,11 @@ class WorkerScheduler:
                 await asyncio.wait_for(self._stopping.wait(), timeout=interval_seconds)
             except TimeoutError:
                 continue
+
+    async def _run_forever(self, name: str, callback: Callable[[], Awaitable[None]]) -> None:
+        try:
+            await callback()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception("worker_loop_failed", worker=name)

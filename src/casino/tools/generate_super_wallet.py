@@ -11,7 +11,7 @@ def main() -> None:
     print_wallet(
         title="Super wallet public address:",
         env_name="SUPER_WALLET_PRIVATE_KEY",
-        purpose="This custody wallet holds every player and house deposit. Withdrawals are paid from here.",
+        purpose="Holds player deposits. Withdrawals are paid from here. Settles house P&L with the house wallet.",
     )
 
 

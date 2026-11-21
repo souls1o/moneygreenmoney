@@ -86,11 +86,13 @@ class EmbedFactory:
         math = self._container.math
         house = SolAmount.from_lamports(reserves_lamports)
         usd = math.sol_to_fiat(house, quote.sol_price("USD"))
+        address = self._container.deposits.house_address()
         builder = (
-            self.builder("House book")
-            .field("SOL", f"`{math.format_sol(house)} SOL`")
+            self.builder("House Balance")
             .field("USD", f"`{math.format_fiat_symbol(usd, 'USD')}`")
         )
+        if address:
+            builder.button("View on blockchain", url=f"https://solscan.io/account/{address}")
         return builder.build()
 
     def balance(self, user: UserRecord, quote: PriceQuote) -> CasinoPanel:
@@ -1180,8 +1182,8 @@ class EmbedFactory:
             self.builder(
                 "House deposit",
                 description=(
-                    "Send **native SOL** to the house deposit address. "
-                    "The full amount is credited to house reserves — no deposit fee."
+                    "Send **native SOL** to the house wallet. "
+                    "The full amount is credited to house reserves and stays on this address — no deposit fee."
                 ),
             )
             .field("Deposit Address", f"`{address}`")

@@ -29,6 +29,7 @@ DESTINATION = "So11111111111111111111111111111111111111112"
 
 class StubRpc:
     super_address = "Super11111111111111111111111111111111112"
+    house_address = "House11111111111111111111111111111111112"
     balance = 10_000_000_000
     sent: list[tuple[str, int]] = []
     fail = False
@@ -53,6 +54,9 @@ class StubRpc:
             raise RuntimeError("rpc down")
         self.sent.append((destination, amount.lamports))
         return "withdraw-sig"
+
+    async def send_from_house(self, destination: str, amount: SolAmount) -> str:
+        return await self.send_from_super(destination, amount)
 
 
 def _service(*, enabled: bool = True):
@@ -198,7 +202,7 @@ async def test_withdrawal_rejects_when_super_wallet_is_short() -> None:
     _user(users_repo, clock)
     _seed_ledger(ledger_repo, clock, lamports=1_000_000_000)
     rpc.balance = SWEEP_FEE_LAMPORTS + RENT_EXEMPT_FALLBACK_LAMPORTS
-    with pytest.raises(WithdrawalError, match="house wallet"):
+    with pytest.raises(WithdrawalError, match="super wallet"):
         await service.request("1", SolAmount.parse("0.25"), DESTINATION)
     assert users_repo.users["1"].sol_balance_lamports == 1_000_000_000
 
@@ -210,7 +214,7 @@ async def test_withdrawal_keeps_super_wallet_rent_exempt() -> None:
     _seed_ledger(ledger_repo, clock, lamports=1_000_000_000)
     amount = SolAmount.parse("0.04533")
     rpc.balance = amount.lamports + SWEEP_FEE_LAMPORTS + 3_248
-    with pytest.raises(WithdrawalError, match="house wallet"):
+    with pytest.raises(WithdrawalError, match="super wallet"):
         await service.request("1", amount, DESTINATION)
     assert rpc.sent == []
     assert users_repo.users["1"].sol_balance_lamports == 1_000_000_000

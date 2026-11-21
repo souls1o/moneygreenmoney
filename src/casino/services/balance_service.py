@@ -11,6 +11,7 @@ from casino.logging.logger import get_logger
 from casino.repositories.house_repository import HouseRepository
 from casino.repositories.transaction_repository import TransactionRepository
 from casino.repositories.user_repository import UserRepository
+from casino.services.custody_service import mark_house_wallet_dirty
 from casino.services.ledger_service import LedgerService
 from casino.utils.clock import Clock
 from casino.utils.identifiers import IdentifierFactory
@@ -168,9 +169,12 @@ class BalanceService:
         price_usd: Decimal,
         game_id: str,
         session: AsyncIOMotorClientSession | None = None,
+        align_wallet: bool = True,
     ) -> LedgerRecord:
         now = self._clock.now()
         treasury = await self._house.credit_fee(amount, now, session=session)
+        if align_wallet:
+            mark_house_wallet_dirty()
         tx = TransactionRecord(
             transaction_id=self._identifiers.transaction_id(),
             type=TransactionType.FEE,
@@ -206,9 +210,12 @@ class BalanceService:
         entry_type: LedgerEntryType = LedgerEntryType.BET,
         transaction_type: TransactionType = TransactionType.BET,
         session: AsyncIOMotorClientSession | None = None,
+        align_wallet: bool = True,
     ) -> tuple[HouseTreasuryRecord, LedgerRecord]:
         now = self._clock.now()
         treasury = await self._house.debit_reserve(amount, now, session=session)
+        if align_wallet:
+            mark_house_wallet_dirty()
         tx = TransactionRecord(
             transaction_id=self._identifiers.transaction_id(),
             type=transaction_type,
@@ -251,9 +258,12 @@ class BalanceService:
         game_id: str | None = None,
         solana_signature: str | None = None,
         session: AsyncIOMotorClientSession | None = None,
+        align_wallet: bool = True,
     ) -> tuple[HouseTreasuryRecord, LedgerRecord]:
         now = self._clock.now()
         treasury = await self._house.credit_reserve(amount, now, session=session)
+        if align_wallet:
+            mark_house_wallet_dirty()
         tx = TransactionRecord(
             transaction_id=self._identifiers.transaction_id(),
             type=transaction_type,
