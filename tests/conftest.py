@@ -98,6 +98,7 @@ class FixedRandomService:
         self._targets = targets
         self._limbos = limbos
         self._mines = mines
+        self._nonce_seq = 0
 
     def commit(self) -> FairCommitment:
         return FairCommitment(server_seed="fixed-server-seed", server_seed_hash="fixed-hash")
@@ -158,6 +159,10 @@ class FixedRandomService:
 
     def client_seed(self) -> str:
         return "fixed-client-seed"
+
+    def nonce(self) -> int:
+        self._nonce_seq += 1
+        return 1_000_000 + self._nonce_seq
 
 
 @pytest.fixture

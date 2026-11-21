@@ -5,8 +5,8 @@ from decimal import Decimal
 
 import pytest
 
-from casino.domain.enums import CoinSide, GameStatus, GameType, JackpotStatus
-from casino.domain.records import HOUSE_USER_ID, GameRecord, HouseTreasuryRecord, JackpotRecord
+from casino.domain.enums import CoinSide, GameStatus, GameType, JackpotStatus, TransactionStatus, TransactionType
+from casino.domain.records import HOUSE_USER_ID, GameRecord, HouseTreasuryRecord, JackpotRecord, TransactionRecord
 from casino.services.house_stats_service import HouseStatsCalculator, HouseStatsService
 from casino.utils.money import SolAmount
 from tests.conftest import FrozenClock, StubPriceService
@@ -178,6 +178,35 @@ class TestHouseStatsCalculator:
             sol_price_usd=Decimal("100"),
             now=now,
             jackpots=[jackpot],
+            transactions=[
+                TransactionRecord(
+                    transaction_id="d1",
+                    type=TransactionType.DEPOSIT,
+                    status=TransactionStatus.CONFIRMED,
+                    amount_lamports=100_000_000,
+                    amount_usd=Decimal("12.50"),
+                    user_id="p1",
+                    created_at=now,
+                ),
+                TransactionRecord(
+                    transaction_id="w1",
+                    type=TransactionType.WITHDRAWAL,
+                    status=TransactionStatus.CONFIRMED,
+                    amount_lamports=40_000_000,
+                    amount_usd=Decimal("4.00"),
+                    user_id="p2",
+                    created_at=now,
+                ),
+                TransactionRecord(
+                    transaction_id="house-d",
+                    type=TransactionType.DEPOSIT,
+                    status=TransactionStatus.CONFIRMED,
+                    amount_lamports=1_000_000_000,
+                    amount_usd=Decimal("100"),
+                    user_id=HOUSE_USER_ID,
+                    created_at=now,
+                ),
+            ],
         )
         day = report.timeframes[0]
         assert mines_win.house_game_pnl_lamports() == 50_000_000 - 200_000_000
@@ -188,6 +217,9 @@ class TestHouseStatsCalculator:
         assert day.house_net_lamports == (50_000_000 - 200_000_000) + 50_000_000 + 6_000_000
         assert day.games_completed == 3
         assert day.unique_players == 3
+        assert day.house_games_pnl_usd == Decimal("-10")
+        assert day.deposits_usd == Decimal("12.50")
+        assert day.withdrawals_usd == Decimal("4.00")
 
 
 @pytest.mark.asyncio

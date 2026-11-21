@@ -5,20 +5,23 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from casino.domain.enums import GameStatus, JackpotStatus
+from casino.domain.enums import GameStatus, JackpotStatus, TransactionType
 from casino.domain.investor import equity_lamports
 from casino.domain.records import (
     GameRecord,
     HouseStatsReport,
+    HOUSE_USER_ID,
     HouseTreasuryRecord,
     JackpotRecord,
     TimeframeStats,
+    TransactionRecord,
     is_house_seat,
 )
 from casino.logging.logger import get_logger
 from casino.repositories.game_repository import GameRepository
 from casino.repositories.house_repository import HouseRepository
 from casino.repositories.jackpot_repository import JackpotRepository
+from casino.repositories.transaction_repository import TransactionRepository
 from casino.services.price_service import PriceService
 from casino.solana_client.rpc import SolanaRpcGateway
 from casino.utils.clock import Clock, DateTimeNormalizer
@@ -57,6 +60,7 @@ class HouseStatsCalculator:
         windows: Sequence[HouseStatWindow] = HOUSE_STAT_WINDOWS,
         super_wallet_lamports: int = 0,
         jackpots: Sequence[JackpotRecord] = (),
+        transactions: Sequence[TransactionRecord] = (),
     ) -> HouseStatsReport:
         aware_now = self._require_utc(now)
         pool = treasury.pool_shares()
@@ -73,7 +77,7 @@ class HouseStatsCalculator:
             open_tables=open_tables,
             sol_price_usd=sol_price_usd,
             timeframes=tuple(
-                self.for_window(games, jackpots, window=window, now=aware_now)
+                self.for_window(games, jackpots, transactions, window=window, now=aware_now)
                 for window in windows
             ),
             founder_shares=treasury.founder_shares,
@@ -86,6 +90,7 @@ class HouseStatsCalculator:
         self,
         games: Sequence[GameRecord],
         jackpots: Sequence[JackpotRecord] = (),
+        transactions: Sequence[TransactionRecord] = (),
         *,
         window: HouseStatWindow,
         now: datetime,
@@ -104,6 +109,7 @@ class HouseStatsCalculator:
         house_wagered = 0
         house_payout = 0
         house_net = 0
+        house_games_pnl_usd = Decimal("0")
         for game in selected:
             human_volume = game.human_volume_lamports()
             volume_lamports += human_volume
@@ -114,6 +120,8 @@ class HouseStatsCalculator:
             fees_usd += game.house_fee_usd
             pnl = game.house_game_pnl_lamports()
             house_net += game.house_fee_lamports + pnl
+            if game.is_vs_house():
+                house_games_pnl_usd += game.house_game_pnl_fiat()
             if game.is_vs_house() or not any(is_house_seat(player_id) for player_id in game.player_ids()):
                 continue
             call_bot_games += 1
@@ -125,6 +133,18 @@ class HouseStatsCalculator:
             unique_players.update(jackpot.player_ids())
             fees_lamports += int(jackpot.house_fee_lamports)
             house_net += int(jackpot.house_fee_lamports)
+        deposits_usd = Decimal("0")
+        withdrawals_usd = Decimal("0")
+        for tx in transactions:
+            if tx.user_id in {None, HOUSE_USER_ID}:
+                continue
+            if not self._tx_in_window(tx, since=since, now=now):
+                continue
+            amount = tx.amount_usd if tx.amount_usd else Decimal("0")
+            if tx.type is TransactionType.DEPOSIT:
+                deposits_usd += amount
+            elif tx.type is TransactionType.WITHDRAWAL:
+                withdrawals_usd += amount
         return TimeframeStats(
             label=window.label,
             games_completed=len(selected) + len(selected_jackpots),
@@ -137,12 +157,18 @@ class HouseStatsCalculator:
             house_wagered_lamports=house_wagered,
             house_payout_lamports=house_payout,
             house_net_lamports=house_net,
+            deposits_usd=deposits_usd,
+            withdrawals_usd=withdrawals_usd,
+            house_games_pnl_usd=house_games_pnl_usd,
         )
 
     def _in_window(self, game: GameRecord, *, since: datetime | None, now: datetime) -> bool:
         if game.status is not GameStatus.COMPLETED:
             return False
         return self._resolved_in_window(game.resolved_at, since=since, now=now)
+
+    def _tx_in_window(self, tx: TransactionRecord, *, since: datetime | None, now: datetime) -> bool:
+        return self._resolved_in_window(tx.created_at, since=since, now=now)
 
     def _jackpot_in_window(
         self, jackpot: JackpotRecord, *, since: datetime | None, now: datetime
@@ -179,6 +205,7 @@ class HouseStatsService:
         rpc: SolanaRpcGateway | None = None,
         calculator: HouseStatsCalculator | None = None,
         jackpot_repository: JackpotRepository | None = None,
+        transaction_repository: TransactionRepository | None = None,
     ) -> None:
         self._games = game_repository
         self._house = house_repository
@@ -187,6 +214,7 @@ class HouseStatsService:
         self._rpc = rpc
         self._calculator = calculator or HouseStatsCalculator()
         self._jackpots = jackpot_repository
+        self._transactions = transaction_repository
         self._logger = get_logger("casino.house_stats")
 
     async def snapshot(self) -> HouseStatsReport:
@@ -195,6 +223,9 @@ class HouseStatsService:
         jackpots: list[JackpotRecord] = []
         if self._jackpots is not None:
             jackpots = await self._jackpots.list_completed_since(treasury.stats_reset_at)
+        transactions: list[TransactionRecord] = []
+        if self._transactions is not None:
+            transactions = await self._transactions.list_player_flows_since(treasury.stats_reset_at)
         quote = await self._prices.get_quote(allow_stale=True)
         return self._calculator.report(
             games=games,
@@ -204,6 +235,7 @@ class HouseStatsService:
             now=self._clock.now(),
             super_wallet_lamports=await self._super_wallet_balance(),
             jackpots=jackpots,
+            transactions=transactions,
         )
 
     async def _super_wallet_balance(self) -> int:

@@ -35,6 +35,33 @@ class CurrencySelect(discord.ui.Select):
         )
 
 
+class RandomizeClientSeedButton(discord.ui.Button):
+    def __init__(self, container: AppContainer, embeds: EmbedFactory, errors: DiscordErrorPresenter) -> None:
+        super().__init__(label="Randomize client seed", style=discord.ButtonStyle.primary)
+        self._container = container
+        self._embeds = embeds
+        self._errors = errors
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            user = await self._container.users.randomize_client_seed(str(interaction.user.id))
+        except Exception as exc:
+            await interaction.response.send_message(
+                **self._errors.panel_for(exc).send_kwargs(ephemeral=True)
+            )
+            return
+        await interaction.response.send_message(
+            **self._embeds.success(
+                "Client seed updated",
+                (
+                    f"New client seed `{user.fair_client_seed}`.\n"
+                    f"Next server seed hash is still `{user.next_server_seed_hash}` "
+                    f"(nonce `{user.fair_nonce}`)."
+                ),
+            ).send_kwargs(ephemeral=True)
+        )
+
+
 class WalletButton(discord.ui.Button):
     def __init__(self, container: AppContainer, embeds: EmbedFactory, errors: DiscordErrorPresenter) -> None:
         super().__init__(label="Set wallet", style=discord.ButtonStyle.secondary)
@@ -55,6 +82,11 @@ def build_settings_panel(
 ):
     builder = embeds.settings(user, currencies)
     builder.add_item(CurrencySelect(container, embeds, currencies, user.display_currency))
+    builder.button(
+        "Randomize client seed",
+        style=discord.ButtonStyle.primary,
+        callback=RandomizeClientSeedButton(container, embeds, errors).callback,
+    )
     builder.button(
         "Set wallet",
         style=discord.ButtonStyle.secondary,

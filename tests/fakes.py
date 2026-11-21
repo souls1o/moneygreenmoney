@@ -68,6 +68,7 @@ class MemoryUserRepository:
         *,
         deposited: SolAmount | None = None,
         won: SolAmount | None = None,
+        withdrawn_refund: SolAmount | None = None,
         fees_paid: SolAmount | None = None,
         games_played: int = 0,
         games_won: int = 0,
@@ -80,6 +81,8 @@ class MemoryUserRepository:
             user.total_deposited_lamports += deposited.lamports
         if won:
             user.total_won_lamports += won.lamports
+        if withdrawn_refund:
+            user.total_withdrawn_lamports = max(user.total_withdrawn_lamports - withdrawn_refund.lamports, 0)
         if fees_paid:
             user.total_fees_paid_lamports += fees_paid.lamports
         user.games_played += games_played
@@ -197,6 +200,28 @@ class MemoryUserRepository:
         user.version += 1
         return self._clone(user)
 
+    async def set_fairness(
+        self,
+        discord_id: str,
+        *,
+        client_seed: str,
+        next_server_seed: str,
+        next_server_seed_hash: str,
+        fair_nonce: int,
+        now: datetime,
+        session=None,
+    ) -> UserRecord | None:
+        user = self.users.get(discord_id)
+        if user is None:
+            return None
+        user.fair_client_seed = client_seed
+        user.next_server_seed = next_server_seed
+        user.next_server_seed_hash = next_server_seed_hash
+        user.fair_nonce = int(fair_nonce)
+        user.updated_at = now
+        user.version += 1
+        return self._clone(user)
+
     async def add_investor_shares(self, discord_id: str, shares: int, now: datetime, session=None) -> UserRecord:
         user = self.users.get(discord_id)
         if user is None:
@@ -243,6 +268,10 @@ class MemoryUserRepository:
             affiliate_earned_lamports=user.affiliate_earned_lamports,
             affiliate_earned_usd=user.affiliate_earned_usd,
             investor_shares=user.investor_shares,
+            fair_client_seed=user.fair_client_seed,
+            next_server_seed=user.next_server_seed,
+            next_server_seed_hash=user.next_server_seed_hash,
+            fair_nonce=user.fair_nonce,
             version=user.version,
             created_at=user.created_at,
             updated_at=user.updated_at,
@@ -567,6 +596,20 @@ class MemoryTransactionRepository:
                 continue
             total += int(transaction.amount_lamports)
         return total
+
+    async def list_player_flows_since(self, since: datetime | None = None) -> list[TransactionRecord]:
+        found: list[TransactionRecord] = []
+        for transaction in self.items.values():
+            if transaction.user_id in {None, HOUSE_USER_ID}:
+                continue
+            if transaction.type not in {TransactionType.DEPOSIT, TransactionType.WITHDRAWAL}:
+                continue
+            if transaction.status is not TransactionStatus.CONFIRMED:
+                continue
+            if since is not None and (transaction.created_at is None or transaction.created_at < since):
+                continue
+            found.append(transaction)
+        return found
 
     async def attach_signature(self, transaction_id: str, signature: str, session=None) -> None:
         transaction = self.items.get(transaction_id)

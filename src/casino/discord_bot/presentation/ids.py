@@ -38,6 +38,7 @@ class ComponentIdCodec:
     WITHDRAW = "bal:withdraw"
     HISTORY = "profile:history:"
     CURRENCY = "settings:currency"
+    CLIENT_SEED = "settings:client_seed"
     PF_CHECK = "pf:check"
     PF_GAME = "pf:game:"
     RAIN_JOIN = "rain:join:"

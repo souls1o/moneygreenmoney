@@ -151,19 +151,18 @@ async def test_withdrawal_sends_from_super_and_debits() -> None:
     result = await service.request("1", SolAmount.parse("0.25"), DESTINATION)
     assert result.signature == "withdraw-sig"
     assert result.destination == DESTINATION
-    assert result.amount.lamports == 247_500_000
+    assert result.amount.lamports == 250_000_000
     assert users_repo.users["1"].sol_balance_lamports == 750_000_000
     assert users_repo.users["1"].total_withdrawn_lamports == 250_000_000
-    assert rpc.sent == [(DESTINATION, 247_500_000)]
+    assert rpc.sent == [(DESTINATION, 250_000_000)]
     assert rpc.swept_users == ["1"]
     assert seen == [("1", "withdraw-sig")]
-    assert house_repo.record.sol_balance_lamports == 2_500_000
+    assert house_repo.record.sol_balance_lamports == 0
     assert house_repo.record.total_fees_collected_lamports == 0
     withdrawals = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.WITHDRAWAL]
     assert len(withdrawals) == 1
     fees = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.FEE]
-    assert len(fees) == 1
-    assert fees[0].amount_lamports == 2_500_000
+    assert fees == []
     stored = await tx_repo.find_by_id(next(iter(tx_repo.items)))
     assert stored is not None
     assert stored.solana_tx_signature == "withdraw-sig"
@@ -178,6 +177,7 @@ async def test_withdrawal_refunds_when_send_fails() -> None:
     with pytest.raises(WithdrawalError, match="refunded"):
         await service.request("1", SolAmount.parse("0.25"), DESTINATION)
     assert users_repo.users["1"].sol_balance_lamports == 1_000_000_000
+    assert users_repo.users["1"].total_withdrawn_lamports == 0
     assert house_repo.record.sol_balance_lamports == 0
     refunds = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.REFUND]
     assert len(refunds) == 1

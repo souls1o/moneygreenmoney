@@ -119,9 +119,7 @@ class GameService:
 
         now = self._clock.now()
         game_id = self._identifiers.game_id(game_type)
-        commitment = self._rng.commit()
-        client_seed = self._rng.client_seed()
-        nonce = await self._house.take_next_fair_nonce()
+        vs_house = game_type in {GameType.BLACKJACK, GameType.LIMBO, GameType.MINES}
         heads_ids = [player1_id] if side is CoinSide.HEADS else []
         tails_ids = [player1_id] if side is CoinSide.TAILS else []
         target = first_to if first_to is not None else 1
@@ -133,7 +131,7 @@ class GameService:
             if target < 1 or target > 21:
                 raise GameError("First-to must be between 1 and 21.")
         first_to = target
-        if game_type in {GameType.BLACKJACK, GameType.LIMBO, GameType.MINES}:
+        if vs_house:
             heads_ids = [player1_id]
             tails_ids = [HOUSE_USER_ID]
         if game_type is GameType.DICE:
@@ -155,33 +153,45 @@ class GameService:
                 raise GameError("Target tables can have 2, 3, or 4 players.")
             heads_ids = [player1_id]
             tails_ids = []
-        game = GameRecord(
-            game_id=game_id,
-            status=GameStatus.PENDING,
-            creator_id=player1_id,
-            bet_amount_lamports=bet.lamports,
-            currency=currency,
-            bet_amount_fiat=fiat_amount,
-            bet_amount_usd=bet_usd,
-            game_type=game_type,
-            mode=mode,
-            heads_ids=heads_ids,
-            tails_ids=tails_ids,
-            guild_id=guild_id,
-            server_seed_hash=commitment.server_seed_hash,
-            server_seed=commitment.server_seed,
-            client_seed=client_seed,
-            nonce=nonce,
-            max_players=max_players if game_type in {GameType.DICE, GameType.TARGET} else 2,
-            first_to=first_to,
-            limbo_target=parsed_limbo,
-            mines_count=parsed_mines,
-            created_at=now,
-        )
-        game.record_wager(player1_id, bet.lamports)
 
         with LogContext.bind(userId=player1_id, gameId=game_id):
             async with self._uow.begin() as uow:
+                if vs_house:
+                    seeds = await self._user_service.take_fair_play(player1_id, session=uow.session)
+                    server_seed = seeds.server_seed
+                    server_seed_hash = seeds.server_seed_hash
+                    client_seed = seeds.client_seed
+                    nonce = seeds.nonce
+                else:
+                    commitment = self._rng.commit()
+                    server_seed = commitment.server_seed
+                    server_seed_hash = commitment.server_seed_hash
+                    client_seed = self._rng.client_seed()
+                    nonce = await self._house.take_next_fair_nonce()
+                game = GameRecord(
+                    game_id=game_id,
+                    status=GameStatus.PENDING,
+                    creator_id=player1_id,
+                    bet_amount_lamports=bet.lamports,
+                    currency=currency,
+                    bet_amount_fiat=fiat_amount,
+                    bet_amount_usd=bet_usd,
+                    game_type=game_type,
+                    mode=mode,
+                    heads_ids=heads_ids,
+                    tails_ids=tails_ids,
+                    guild_id=guild_id,
+                    server_seed_hash=server_seed_hash,
+                    server_seed=server_seed,
+                    client_seed=client_seed,
+                    nonce=nonce,
+                    max_players=max_players if game_type in {GameType.DICE, GameType.TARGET} else 2,
+                    first_to=first_to,
+                    limbo_target=parsed_limbo,
+                    mines_count=parsed_mines,
+                    created_at=now,
+                )
+                game.record_wager(player1_id, bet.lamports)
                 await self._games.insert(game, session=uow.session)
                 mutation = await self._balances.debit(
                     user_id=player1_id,
@@ -215,7 +225,7 @@ class GameService:
                 mode=mode.value,
                 gameType=game_type.value,
                 betUsd=str(bet_usd),
-                serverSeedHash=commitment.server_seed_hash,
+                serverSeedHash=game.server_seed_hash,
             )
         return game
 

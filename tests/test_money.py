@@ -67,10 +67,10 @@ class TestMathService:
         assert math.format_fiat_symbol(Decimal("10"), "EUR") == "€10.00"
 
 
-def test_transfer_fee_is_one_percent() -> None:
+def test_transfer_fee_is_disabled() -> None:
     amount = SolAmount.from_lamports(1_000_000_000)
-    assert transfer_fee(amount).lamports == 10_000_000
-    assert subtract_transfer_fee(amount).lamports == 990_000_000
+    assert transfer_fee(amount).lamports == 0
+    assert subtract_transfer_fee(amount).lamports == 1_000_000_000
 
 
 def test_house_table_cap_is_ten_percent_including_reserved() -> None:

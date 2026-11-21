@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from casino.config.settings import Settings
@@ -15,7 +16,7 @@ from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.solana_client.addresses import SolanaAddressValidator
 from casino.solana_client.rpc import SWEEP_FEE_LAMPORTS, SolanaRpcGateway
-from casino.utils.money import SolAmount, subtract_transfer_fee, transfer_fee
+from casino.utils.money import SolAmount
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,9 +79,7 @@ class WithdrawalService:
         if amount.lamports > ledger_balance:
             raise WithdrawalError("This withdrawal is larger than your ledger balance.")
 
-        payout = subtract_transfer_fee(amount)
-        if payout.is_zero():
-            raise ValidationError("Enter a withdrawal amount greater than zero.")
+        payout = amount
 
         await self._rpc.collect_user_into_super(discord_id)
         await self._rpc.collect_house_into_super()
@@ -117,24 +116,6 @@ class WithdrawalService:
                 )
                 await self._refund(discord_id, amount, usd_price, wallet)
                 raise WithdrawalError(_user_send_error(exc)) from exc
-            fee = transfer_fee(amount)
-            if not fee.is_zero():
-                try:
-                    async with self._uow.begin() as uow:
-                        await self._balances.credit_house_reserve(
-                            amount=fee,
-                            entry_type=LedgerEntryType.FEE,
-                            transaction_type=TransactionType.FEE,
-                            price_usd=usd_price,
-                            description="Withdrawal transfer fee",
-                            session=uow.session,
-                        )
-                except Exception:
-                    self._logger.exception(
-                        "withdrawal_fee_credit_failed",
-                        amountLamports=fee.lamports,
-                        txSignature=signature,
-                    )
             try:
                 await self._transactions.attach_signature(mutation.transaction.transaction_id, signature)
             except Exception:
@@ -158,19 +139,37 @@ class WithdrawalService:
             )
 
     async def _refund(self, discord_id: str, amount: SolAmount, usd_price, wallet: str) -> None:
-        try:
-            async with self._uow.begin() as uow:
-                await self._balances.credit(
-                    user_id=discord_id,
-                    amount=amount,
-                    entry_type=LedgerEntryType.REFUND,
-                    transaction_type=TransactionType.REFUND,
-                    price_usd=usd_price,
-                    description=f"Refund failed withdrawal to {wallet}",
-                    session=uow.session,
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                async with self._uow.begin() as uow:
+                    await self._balances.credit(
+                        user_id=discord_id,
+                        amount=amount,
+                        entry_type=LedgerEntryType.REFUND,
+                        transaction_type=TransactionType.REFUND,
+                        price_usd=usd_price,
+                        description=f"Refund failed withdrawal to {wallet}",
+                        withdrawn_refund=amount,
+                        session=uow.session,
+                    )
+                return
+            except Exception as exc:
+                last_error = exc
+                self._logger.exception(
+                    "withdrawal_refund_failed",
+                    userId=discord_id,
+                    amountLamports=amount.lamports,
+                    attempt=attempt + 1,
                 )
-        except Exception:
-            self._logger.exception("withdrawal_refund_failed", userId=discord_id, amountLamports=amount.lamports)
+                await asyncio.sleep(0.5 * (attempt + 1))
+        if last_error is not None:
+            self._logger.error(
+                "withdrawal_refund_gave_up",
+                userId=discord_id,
+                amountLamports=amount.lamports,
+                error=str(last_error),
+            )
 
 
 def _user_send_error(exc: BaseException) -> str:

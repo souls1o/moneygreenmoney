@@ -21,6 +21,15 @@ class FairCommitment:
 
 
 @dataclass(frozen=True, slots=True)
+class FairPlaySeeds:
+    server_seed: str
+    server_seed_hash: str
+    client_seed: str
+    nonce: int
+    next_server_seed_hash: str
+
+
+@dataclass(frozen=True, slots=True)
 class FairCard:
     digest: str
     card: BlackjackCard
@@ -97,6 +106,9 @@ class ProvablyFairService:
 
     def client_seed(self) -> str:
         return secrets.token_hex(16)
+
+    def nonce(self) -> int:
+        return secrets.randbits(32)
 
     def hash_server_seed(self, server_seed: str) -> str:
         return hashlib.sha256(server_seed.encode("utf-8")).hexdigest()

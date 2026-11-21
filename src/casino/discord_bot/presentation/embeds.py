@@ -779,9 +779,12 @@ class EmbedFactory:
         builder = self.builder(
             "Provably Fair",
             description=(
-                "Every game commits a random server seed by publishing `SHA256(server_seed)` "
-                "before play starts. A random client seed and game nonce are shown on the "
-                "table and never change. The server seed stays hidden until the game completes.\n\n"
+                "Blackjack, limbo, and mines lock `SHA256(server_seed)` on your account **before** "
+                "the next bet. Your client seed is yours — randomize it in `/settings` any time "
+                "before you play. After the round, Verify reveals the server seed so SHA-256 must "
+                "match the hash you already had.\n\n"
+                "PvP tables commit a fresh server seed when the table is created. "
+                "The server seed stays hidden until the game completes.\n\n"
                 "Press **Verify** on a result, then paste the values into the verifier.\n"
                 "• **Coinflip** — paste the nonce as-is. The site's 0–100 number is the result "
                 "(0–50 Heads, 50–100 Tails).\n"
@@ -999,10 +1002,17 @@ class EmbedFactory:
         return (
             self.builder(
                 "Player settings",
-                description="Choose how bet amounts are interpreted.",
+                description=(
+                    "Choose how bet amounts are interpreted. "
+                    "House games use your client seed plus the next server-seed hash below. "
+                    "That hash is locked before you bet; randomizing the client seed does not change it."
+                ),
             )
             .field("Currency", user.display_currency)
             .field("Deposit address", f"`{user.deposit_address or 'not ready'}`")
+            .field("Client seed", f"`{user.fair_client_seed or 'not ready'}`")
+            .field("Next server seed hash", f"`{user.next_server_seed_hash or 'not ready'}`")
+            .field("Next nonce", str(user.fair_nonce))
             .timeout(180)
         )
 
@@ -1193,7 +1203,7 @@ class EmbedFactory:
                 "Wallet",
                 (
                     "Use `/balance` to deposit native SOL to your personal address, then withdraw from there. "
-                    "Deposits credit in full. Withdrawals take a **1%** transfer fee credited to the house book. "
+                    "Deposits and withdrawals credit in full. "
                     "`/settings` sets your currency."
                 ),
             )
@@ -1410,7 +1420,6 @@ class EmbedFactory:
                 "Withdrawal",
                 description=f"{self._mention(user_id)} withdrew **{self._signed_usd(-amount_usd)}**.",
             )
-            .field("Destination", f"`{destination}`")
             .build()
         )
 
@@ -1609,6 +1618,9 @@ class EmbedFactory:
             f"Games: `{window.games_completed}`\n"
             f"Players: `{window.unique_players}`\n"
             f"Volume: {self._usd_then_sol(window.volume_lamports, sol_price)}\n"
+            f"Deposits: {self._container.math.format_fiat_symbol(window.deposits_usd, 'USD')}\n"
+            f"Withdrawals: {self._container.math.format_fiat_symbol(window.withdrawals_usd, 'USD')}\n"
+            f"House games: {self._signed_usd(window.house_games_pnl_usd)}\n"
             f"Fees: {self._usd_then_sol(window.fees_lamports, sol_price)}\n"
             f"Call bot: {self._usd_then_sol(call_pnl, sol_price, signed=True)}\n"
             f"House net: {self._usd_then_sol(window.house_net_lamports, sol_price, signed=True)}"

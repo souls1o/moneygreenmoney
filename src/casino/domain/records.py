@@ -84,6 +84,10 @@ class UserRecord:
     affiliate_earned_lamports: int = 0
     affiliate_earned_usd: Decimal = Decimal("0")
     investor_shares: int = 0
+    fair_client_seed: str = ""
+    next_server_seed: str = ""
+    next_server_seed_hash: str = ""
+    fair_nonce: int = 0
     version: int = 0
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -731,6 +735,9 @@ class TimeframeStats:
     house_wagered_lamports: int
     house_payout_lamports: int
     house_net_lamports: int
+    deposits_usd: Decimal = Decimal("0")
+    withdrawals_usd: Decimal = Decimal("0")
+    house_games_pnl_usd: Decimal = Decimal("0")
 
 
 @dataclass(frozen=True, slots=True)

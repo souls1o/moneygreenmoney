@@ -24,7 +24,7 @@ class SettingsCog(commands.Cog):
     async def settings(self, interaction: discord.Interaction) -> None:
         await self._container.rate_limits.enforce(f"settings:{interaction.user.id}")
         with LogContext.bind(userId=str(interaction.user.id)):
-            user = await self._container.users.get_or_create(str(interaction.user.id))
+            user = await self._container.users.ensure_fairness(str(interaction.user.id))
             currencies = self._container.settings_service.supported_currencies()
             panel = build_settings_panel(
                 self._container,

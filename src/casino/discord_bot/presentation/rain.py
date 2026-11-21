@@ -95,27 +95,8 @@ class RainPresenter:
     async def _notify_joiners(self, rain: RainRecord) -> None:
         if rain.status is not RainStatus.COMPLETED or not rain.joiner_ids:
             return
-        await self._ping_joiners(rain)
         for user_id in rain.joiner_ids:
             await self._dm_joiner(rain, user_id)
-
-    async def _ping_joiners(self, rain: RainRecord) -> None:
-        if not rain.channel_id:
-            return
-        channel = await self._text_channel(rain.channel_id)
-        if channel is None:
-            return
-        mentions = discord.AllowedMentions(users=True, roles=False, everyone=False)
-        for batch in _chunks(rain.joiner_ids, 40):
-            tags = " ".join(f"<@{user_id}>" for user_id in batch)
-            try:
-                await channel.send(
-                    content=f"Rain ended. {tags}",
-                    allowed_mentions=mentions,
-                )
-            except discord.HTTPException:
-                self._logger.info("rain_joiner_ping_skipped", rainId=rain.rain_id)
-                return
 
     async def _dm_joiner(self, rain: RainRecord, user_id: str) -> None:
         share = SolAmount.from_lamports(int(rain.payouts_lamports.get(user_id, 0)))

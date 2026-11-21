@@ -173,7 +173,8 @@ class ContainerFactory:
 
         ledger = LedgerService(ledger_repo, identifiers, clock)
         balances = BalanceService(users_repo, tx_repo, house_repo, ledger, identifiers, clock)
-        users = UserService(users_repo, identifiers, clock, settings, deposit_wallets)
+        fair = ProvablyFairService()
+        users = UserService(users_repo, identifiers, clock, settings, deposit_wallets, fair)
         price = PriceService(settings, clock, http_client)
         validation = ValidationService(
             math,
@@ -182,7 +183,6 @@ class ContainerFactory:
             Decimal(settings.min_invest_usd),
             Decimal(settings.max_invest_usd),
         )
-        fair = ProvablyFairService()
         affiliates = AffiliateService(users_repo, users, balances, clock)
         games = GameService(
             games_repo,
@@ -204,7 +204,13 @@ class ContainerFactory:
         guild_configs = GuildConfigService(guild_config_repo, clock)
         verification = VerificationService(clock)
         house_stats = HouseStatsService(
-            games_repo, house_repo, price, clock, solana, jackpot_repository=jackpots_repo
+            games_repo,
+            house_repo,
+            price,
+            clock,
+            solana,
+            jackpot_repository=jackpots_repo,
+            transaction_repository=tx_repo,
         )
         investors = InvestorService(
             users,

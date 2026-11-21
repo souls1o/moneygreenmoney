@@ -73,6 +73,7 @@ class UserRepository(MongoRepository):
         *,
         deposited: SolAmount | None = None,
         won: SolAmount | None = None,
+        withdrawn_refund: SolAmount | None = None,
         fees_paid: SolAmount | None = None,
         games_played: int = 0,
         games_won: int = 0,
@@ -87,6 +88,8 @@ class UserRepository(MongoRepository):
             increments["totalDepositedLamports"] = deposited.lamports
         if won:
             increments["totalWonLamports"] = won.lamports
+        if withdrawn_refund:
+            increments["totalWithdrawnLamports"] = -withdrawn_refund.lamports
         if fees_paid:
             increments["totalFeesPaidLamports"] = fees_paid.lamports
         if games_played:
@@ -164,6 +167,34 @@ class UserRepository(MongoRepository):
         document = await self.collection.find_one_and_update(
             {"discordId": discord_id},
             {"$set": {"depositAddress": address, "updatedAt": now}, "$inc": {"version": 1}},
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        return self._mapper.user_from_document(document) if document else None
+
+    async def set_fairness(
+        self,
+        discord_id: str,
+        *,
+        client_seed: str,
+        next_server_seed: str,
+        next_server_seed_hash: str,
+        fair_nonce: int,
+        now: datetime,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> UserRecord | None:
+        document = await self.collection.find_one_and_update(
+            {"discordId": discord_id},
+            {
+                "$set": {
+                    "fairClientSeed": client_seed,
+                    "nextServerSeed": next_server_seed,
+                    "nextServerSeedHash": next_server_seed_hash,
+                    "fairNonce": int(fair_nonce),
+                    "updatedAt": now,
+                },
+                "$inc": {"version": 1},
+            },
             return_document=ReturnDocument.AFTER,
             session=session,
         )

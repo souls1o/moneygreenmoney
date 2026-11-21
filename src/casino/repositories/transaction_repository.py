@@ -7,7 +7,7 @@ from pymongo.errors import DuplicateKeyError
 
 from casino.db.mongo import COLLECTION_TRANSACTIONS
 from casino.domain.enums import TransactionStatus, TransactionType
-from casino.domain.records import TransactionRecord
+from casino.domain.records import HOUSE_USER_ID, TransactionRecord
 from casino.errors import AlreadyProcessedError
 from casino.repositories.base import MongoRepository
 from casino.repositories.mappers import DocumentMapper
@@ -56,6 +56,17 @@ class TransactionRepository(MongoRepository):
         if not document:
             return 0
         return int(document.get("total") or 0)
+
+    async def list_player_flows_since(self, since: datetime | None = None) -> list[TransactionRecord]:
+        query: dict[str, object] = {
+            "type": {"$in": [TransactionType.DEPOSIT.value, TransactionType.WITHDRAWAL.value]},
+            "status": TransactionStatus.CONFIRMED.value,
+            "userId": {"$nin": [None, HOUSE_USER_ID]},
+        }
+        if since is not None:
+            query["createdAt"] = {"$gte": since}
+        documents = await self.collection.find(query).to_list(None)
+        return [self._mapper.transaction_from_document(document) for document in documents]
 
     async def attach_signature(
         self,

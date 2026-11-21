@@ -44,7 +44,8 @@ class GameHarness:
             self.users_repo, self.tx_repo, self.house_repo, ledger, self.ids, self.clock
         )
         settings = StubSettings()
-        users = UserService(self.users_repo, self.ids, self.clock, settings)  # type: ignore[arg-type]
+        rng = FixedRandomService(side)
+        users = UserService(self.users_repo, self.ids, self.clock, settings, rng=rng)  # type: ignore[arg-type]
         self.service = GameService(
             self.games_repo,
             self.users_repo,
@@ -53,7 +54,7 @@ class GameHarness:
             StubPriceService(Decimal("100")),
             ValidationService(self.math, Decimal("0.01"), ("USD", "EUR")),
             self.math,
-            FixedRandomService(side),
+            rng,
             self.ids,
             self.clock,
             NullUnitOfWorkFactory(),

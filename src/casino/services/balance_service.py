@@ -57,6 +57,7 @@ class BalanceService:
         solana_signature: str | None = None,
         deposited: bool = False,
         won: SolAmount | None = None,
+        withdrawn_refund: SolAmount | None = None,
         session: AsyncIOMotorClientSession | None = None,
     ) -> BalanceMutation:
         now = self._clock.now()
@@ -65,6 +66,7 @@ class BalanceService:
             amount,
             deposited=amount if deposited else None,
             won=won,
+            withdrawn_refund=withdrawn_refund,
             now=now,
             session=session,
         )

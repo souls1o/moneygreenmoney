@@ -225,10 +225,32 @@ class SolanaRpcGateway:
             self._logger.warning("rent_exempt_lookup_failed", fallback=RENT_EXEMPT_FALLBACK_LAMPORTS)
             return RENT_EXEMPT_FALLBACK_LAMPORTS
 
-    async def send_transaction(self, transaction: VersionedTransaction) -> str:
-        opts = TxOpts(skip_preflight=True, skip_confirmation=True, max_retries=3)
+    async def send_transaction(
+        self,
+        transaction: VersionedTransaction,
+        *,
+        skip_preflight: bool = True,
+        confirm: bool = False,
+    ) -> str:
+        opts = TxOpts(skip_preflight=skip_preflight, skip_confirmation=True, max_retries=3)
         response = await self.client.send_transaction(transaction, opts=opts)
-        return str(response.value)
+        signature = str(response.value)
+        if confirm:
+            await self.confirm_signature(signature)
+        return signature
+
+    async def confirm_signature(self, signature: str) -> None:
+        sig = Signature.from_string(signature)
+        response = await self.client.confirm_transaction(sig, commitment=Confirmed)
+        statuses = getattr(response, "value", None) or []
+        status = statuses[0] if statuses else None
+        if status is None:
+            parsed = await self.get_parsed_transaction(signature)
+            if parsed is None:
+                raise RuntimeError("The Solana transaction was not confirmed.")
+            return
+        if getattr(status, "err", None):
+            raise RuntimeError(f"The Solana transaction failed: {status.err}")
 
     async def collect_house_into_super(self) -> str | None:
         if not self.has_house_wallet or self._super_keypair is None:
@@ -288,7 +310,9 @@ class SolanaRpcGateway:
                     recent_blockhash=await self.get_latest_blockhash(),
                     legs=[TransferLeg(destination=dest, amount=amount)],
                 )
-                signature = await self.send_transaction(transaction)
+                signature = await self.send_transaction(
+                    transaction, skip_preflight=False, confirm=True
+                )
                 self._logger.info(
                     "withdrawal_sent",
                     destination=destination,
