@@ -24,6 +24,12 @@ class MinesTileTarget:
     tile: int
 
 
+@dataclass(frozen=True, slots=True)
+class BaccaratBetTarget:
+    baccarat_id: str
+    side: BaccaratSide
+
+
 class ComponentIdCodec:
     JOIN = "cf:join:"
     JOIN_HEADS = "cf:join_heads:"
@@ -57,15 +63,15 @@ class ComponentIdCodec:
     TICKET_TOPIC = "ticket:topic"
     TICKET_CLOSE = "ticket:close:"
     JP_JOIN = "jp:join:"
+    BC_PLAYER = "bc:p:"
+    BC_BANKER = "bc:b:"
+    BC_TIE = "bc:t:"
     MN_TILE = "mn:t:"
     MN_CASH = "mn:cash:"
     MN_NEW = "mn:new:"
     MN_BET = "mn:bet:"
 
     def join(self, game_id: str) -> str:
-    BC_PLAYER = "bc:p:"
-    BC_BANKER = "bc:b:"
-    BC_TIE = "bc:t:"
         return f"{self.JOIN}{game_id}"
 
     def join_heads(self, game_id: str) -> str:
@@ -188,9 +194,6 @@ class ComponentIdCodec:
     def parse_target_lock(self, custom_id: str) -> str | None:
         return custom_id[len(self.TARGET_LOCK) :] if custom_id.startswith(self.TARGET_LOCK) else None
 
-    def parse_blackjack(self, custom_id: str) -> BlackjackTarget | None:
-        mapping = (
-            (self.BJ_HIT, BlackjackAction.HIT),
     def baccarat_player(self, baccarat_id: str) -> str:
         return f"{self.BC_PLAYER}{baccarat_id}"
 
@@ -213,6 +216,9 @@ class ComponentIdCodec:
                     return BaccaratBetTarget(baccarat_id=baccarat_id, side=side)
         return None
 
+    def parse_blackjack(self, custom_id: str) -> BlackjackTarget | None:
+        mapping = (
+            (self.BJ_HIT, BlackjackAction.HIT),
             (self.BJ_STAND, BlackjackAction.STAND),
             (self.BJ_SPLIT, BlackjackAction.SPLIT),
             (self.BJ_DOUBLE, BlackjackAction.DOUBLE),

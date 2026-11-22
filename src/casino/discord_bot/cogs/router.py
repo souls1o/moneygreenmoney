@@ -59,6 +59,7 @@ class ComponentRouterCog(commands.Cog):
                 "tg:",
                 "ticket:",
                 "jp:",
+                "bc:",
                 "mn:",
             )
         )
@@ -135,9 +136,9 @@ class ComponentRouterCog(commands.Cog):
                 await self._on_rain_join(interaction, rain_id)
             elif (jackpot_id := self._ids.parse_jackpot_join(custom_id)):
                 await self._on_jackpot_join(interaction, jackpot_id)
-            elif (target := self._ids.parse_history(custom_id)):
             elif (target := self._ids.parse_baccarat_bet(custom_id)):
                 await self._on_baccarat_bet(interaction, target.baccarat_id, target.side)
+            elif (target := self._ids.parse_history(custom_id)):
                 await self._on_history(interaction, target.user_id, target.page)
             elif custom_id == self._ids.TICKET_TOPIC:
                 await self._on_ticket_topic(interaction)
@@ -395,7 +396,6 @@ class ComponentRouterCog(commands.Cog):
                 game_id, str(interaction.user.id), interaction=interaction
             )
 
-    async def _on_jackpot_join(self, interaction: discord.Interaction, jackpot_id: str) -> None:
     async def _on_baccarat_bet(self, interaction: discord.Interaction, baccarat_id: str, side) -> None:
         table = await self._container.baccarat.get(baccarat_id)
         if not table.is_open():
@@ -413,6 +413,7 @@ class ComponentRouterCog(commands.Cog):
             )
         )
 
+    async def _on_jackpot_join(self, interaction: discord.Interaction, jackpot_id: str) -> None:
         from casino.domain.jackpot import max_join_lamports
         from casino.utils.money import SolAmount
 
