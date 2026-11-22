@@ -5,13 +5,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from casino.domain.enums import GameStatus, JackpotStatus, TransactionType
+from casino.domain.enums import BaccaratStatus, GameStatus, JackpotStatus, TransactionType
 from casino.domain.investor import equity_lamports
 from casino.domain.records import (
     GameRecord,
     HouseStatsReport,
     HOUSE_USER_ID,
     HouseTreasuryRecord,
+    BaccaratRecord,
     JackpotRecord,
     TimeframeStats,
     TransactionRecord,
@@ -20,6 +21,7 @@ from casino.domain.records import (
 from casino.logging.logger import get_logger
 from casino.repositories.game_repository import GameRepository
 from casino.repositories.house_repository import HouseRepository
+from casino.repositories.baccarat_repository import BaccaratRepository
 from casino.repositories.jackpot_repository import JackpotRepository
 from casino.repositories.transaction_repository import TransactionRepository
 from casino.services.price_service import PriceService
@@ -60,6 +62,7 @@ class HouseStatsCalculator:
         windows: Sequence[HouseStatWindow] = HOUSE_STAT_WINDOWS,
         super_wallet_lamports: int = 0,
         jackpots: Sequence[JackpotRecord] = (),
+        baccarats: Sequence[BaccaratRecord] = (),
         transactions: Sequence[TransactionRecord] = (),
     ) -> HouseStatsReport:
         aware_now = self._require_utc(now)
@@ -77,7 +80,9 @@ class HouseStatsCalculator:
             open_tables=open_tables,
             sol_price_usd=sol_price_usd,
             timeframes=tuple(
-                self.for_window(games, jackpots, transactions, window=window, now=aware_now)
+                self.for_window(
+                    games, jackpots, transactions, window=window, now=aware_now, baccarats=baccarats
+                )
                 for window in windows
             ),
             founder_shares=treasury.founder_shares,
@@ -94,11 +99,15 @@ class HouseStatsCalculator:
         *,
         window: HouseStatWindow,
         now: datetime,
+        baccarats: Sequence[BaccaratRecord] = (),
     ) -> TimeframeStats:
         since = None if window.delta is None else now - window.delta
         selected = [game for game in games if self._in_window(game, since=since, now=now)]
         selected_jackpots = [
             jackpot for jackpot in jackpots if self._jackpot_in_window(jackpot, since=since, now=now)
+        ]
+        selected_baccarat = [
+            table for table in baccarats if self._baccarat_in_window(table, since=since, now=now)
         ]
         unique_players: set[str] = set()
         volume_lamports = 0
@@ -133,6 +142,10 @@ class HouseStatsCalculator:
             unique_players.update(jackpot.player_ids())
             fees_lamports += int(jackpot.house_fee_lamports)
             house_net += int(jackpot.house_fee_lamports)
+        for table in selected_baccarat:
+            volume_lamports += table.pot_lamports()
+            unique_players.update(table.player_ids())
+            house_net += int(table.house_pnl_lamports)
         deposits_usd = Decimal("0")
         withdrawals_usd = Decimal("0")
         for tx in transactions:
@@ -147,7 +160,7 @@ class HouseStatsCalculator:
                 withdrawals_usd += amount
         return TimeframeStats(
             label=window.label,
-            games_completed=len(selected) + len(selected_jackpots),
+            games_completed=len(selected) + len(selected_jackpots) + len(selected_baccarat),
             unique_players=len(unique_players),
             volume_lamports=volume_lamports,
             volume_usd=volume_usd,
@@ -177,6 +190,13 @@ class HouseStatsCalculator:
             return False
         return self._resolved_in_window(jackpot.resolved_at, since=since, now=now)
 
+    def _baccarat_in_window(
+        self, table: BaccaratRecord, *, since: datetime | None, now: datetime
+    ) -> bool:
+        if table.status is not BaccaratStatus.COMPLETED:
+            return False
+        return self._resolved_in_window(table.resolved_at, since=since, now=now)
+
     def _resolved_in_window(
         self, resolved_at: datetime | None, *, since: datetime | None, now: datetime
     ) -> bool:
@@ -205,6 +225,7 @@ class HouseStatsService:
         rpc: SolanaRpcGateway | None = None,
         calculator: HouseStatsCalculator | None = None,
         jackpot_repository: JackpotRepository | None = None,
+        baccarat_repository: BaccaratRepository | None = None,
         transaction_repository: TransactionRepository | None = None,
     ) -> None:
         self._games = game_repository
@@ -214,6 +235,7 @@ class HouseStatsService:
         self._rpc = rpc
         self._calculator = calculator or HouseStatsCalculator()
         self._jackpots = jackpot_repository
+        self._baccarat = baccarat_repository
         self._transactions = transaction_repository
         self._logger = get_logger("casino.house_stats")
 
@@ -223,6 +245,9 @@ class HouseStatsService:
         jackpots: list[JackpotRecord] = []
         if self._jackpots is not None:
             jackpots = await self._jackpots.list_completed_since(treasury.stats_reset_at)
+        baccarats: list[BaccaratRecord] = []
+        if self._baccarat is not None:
+            baccarats = await self._baccarat.list_completed_since(treasury.stats_reset_at)
         transactions: list[TransactionRecord] = []
         if self._transactions is not None:
             transactions = await self._transactions.list_player_flows_since(treasury.stats_reset_at)
@@ -235,6 +260,7 @@ class HouseStatsService:
             now=self._clock.now(),
             super_wallet_lamports=await self._super_wallet_balance(),
             jackpots=jackpots,
+            baccarats=baccarats,
             transactions=transactions,
         )
 

@@ -394,6 +394,26 @@ def build_admin_config(
                 page=6,
             )
         )
+        builder.add_item(
+            _ConfigChannelSelect(
+                container,
+                embeds,
+                GuildConfigSlot.BACCARAT,
+                placeholder="Baccarat channel",
+                channel_types=text,
+                page=6,
+            )
+        )
+        builder.add_item(
+            _ConfigChannelSelect(
+                container,
+                embeds,
+                GuildConfigSlot.BACCARAT_HISTORY,
+                placeholder="Baccarat history channel",
+                channel_types=text,
+                page=6,
+            )
+        )
         builder.button(
             "Back",
             style=discord.ButtonStyle.secondary,

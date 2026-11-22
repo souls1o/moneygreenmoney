@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from casino.db.unit_of_work import UnitOfWorkFactory
 from casino.domain.enums import LedgerEntryType, TransactionType, UserRole
+from casino.domain.investor import equity_lamports, shares_to_burn
 from casino.domain.records import HOUSE_USER_ID, HouseTreasuryRecord, UserRecord
 from casino.errors import ConfigurationError, InsufficientHouseReserveError, ValidationError, WithdrawalError
 from casino.logging.logger import get_logger
@@ -109,6 +110,16 @@ class AdminService:
     async def house_treasury(self) -> HouseTreasuryRecord:
         return await self._house.get()
 
+    async def founder_withdrawable(self) -> SolAmount:
+        treasury = await self._capitalized_treasury()
+        return SolAmount.from_lamports(
+            equity_lamports(
+                treasury.founder_shares,
+                treasury.sol_balance_lamports,
+                treasury.pool_shares(),
+            )
+        )
+
     async def reset_house_stats(self, actor_id: str) -> HouseTreasuryRecord:
         treasury = await self._house.reset_stats(datetime.now(UTC))
         self._logger.info("house_stats_reset", actorId=actor_id)
@@ -193,10 +204,9 @@ class AdminService:
         founder_shares_burned = 0
         try:
             async with self._uow.begin() as uow:
-                if self._investors is not None:
-                    founder_shares_burned = await self._investors.founder_outflow_shares(
-                        amount, session=uow.session
-                    )
+                founder_shares_burned = await self._founder_shares_to_burn(
+                    amount, session=uow.session
+                )
                 _treasury, entry = await self._balances.debit_house_reserve(
                     amount=amount,
                     price_usd=usd_price,
@@ -206,10 +216,7 @@ class AdminService:
                     session=uow.session,
                     align_wallet=False,
                 )
-                if self._investors is not None and founder_shares_burned:
-                    await self._investors.apply_founder_share_delta(
-                        -founder_shares_burned, session=uow.session
-                    )
+                await self._apply_founder_share_delta(-founder_shares_burned, session=uow.session)
         except InsufficientHouseReserveError as exc:
             raise WithdrawalError("The house book does not have enough SOL for this withdrawal.") from exc
 
@@ -260,16 +267,57 @@ class AdminService:
                     session=uow.session,
                     align_wallet=False,
                 )
-                if self._investors is not None and founder_shares_burned:
-                    await self._investors.apply_founder_share_delta(
-                        founder_shares_burned, session=uow.session
-                    )
+                await self._apply_founder_share_delta(founder_shares_burned, session=uow.session)
         except Exception:
             self._logger.exception(
                 "house_withdrawal_refund_failed",
                 actorId=actor_id,
                 amountLamports=amount.lamports,
             )
+
+    async def _capitalized_treasury(self, session=None) -> HouseTreasuryRecord:
+        if self._investors is not None:
+            return await self._investors.ensure_capitalized(session=session)
+        treasury = await self._house.get(session=session)
+        if treasury.pool_shares() == 0 and treasury.sol_balance_lamports > 0:
+            return await self._house.seed_founder_shares(
+                treasury.sol_balance_lamports, datetime.now(UTC), session=session
+            )
+        return treasury
+
+    async def _founder_shares_to_burn(self, amount: SolAmount, session=None) -> int:
+        if self._investors is not None:
+            return await self._investors.founder_outflow_shares(amount, session=session)
+        treasury = await self._capitalized_treasury(session=session)
+        burned = shares_to_burn(
+            amount.lamports,
+            treasury.sol_balance_lamports,
+            treasury.pool_shares(),
+            treasury.founder_shares,
+        )
+        if burned is None:
+            cap = SolAmount.from_lamports(
+                equity_lamports(
+                    treasury.founder_shares,
+                    treasury.sol_balance_lamports,
+                    treasury.pool_shares(),
+                )
+            )
+            raise WithdrawalError(
+                "House withdrawals can only come from founder share. "
+                f"Founder can withdraw up to `{cap.to_decimal()} SOL`."
+            )
+        return burned
+
+    async def _apply_founder_share_delta(self, shares: int, session=None) -> None:
+        if shares == 0:
+            return
+        if self._investors is not None:
+            await self._investors.apply_founder_share_delta(shares, session=session)
+            return
+        await self._house.adjust_shares(
+            founder_delta=shares, now=datetime.now(UTC), session=session
+        )
 
 
 def _house_send_error(exc: BaseException) -> str:

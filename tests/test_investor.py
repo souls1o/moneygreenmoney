@@ -168,7 +168,7 @@ async def test_founder_cannot_withdraw_investor_capital() -> None:
     harness.seed_user("inv-1", "5")
     await harness.investors.deposit("inv-1", SolAmount.parse("1"))
 
-    with pytest.raises(WithdrawalError, match="investor capital"):
+    with pytest.raises(WithdrawalError, match="founder share"):
         await harness.admin.withdraw_house(SolAmount.parse("9.5"), DESTINATION, "admin-1")
 
     result = await harness.admin.withdraw_house(SolAmount.parse("9"), DESTINATION, "admin-1")

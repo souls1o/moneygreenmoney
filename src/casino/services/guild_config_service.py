@@ -65,3 +65,8 @@ class GuildConfigService:
         config = await self._configs.set_jackpot_message(guild_id, message_id, self._clock.now())
         self._logger.info("jackpot_panel_stored", guildId=guild_id, messageId=message_id)
         return config
+
+    async def set_baccarat_message(self, guild_id: str, message_id: str) -> GuildConfigRecord:
+        config = await self._configs.set_baccarat_message(guild_id, message_id, self._clock.now())
+        self._logger.info("baccarat_panel_stored", guildId=guild_id, messageId=message_id)
+        return config

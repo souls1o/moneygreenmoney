@@ -24,6 +24,7 @@ from casino.discord_bot.cogs.verification import VerificationCog
 from casino.discord_bot.presentation.admin_alerts import AdminChannelPresenter
 from casino.discord_bot.presentation.errors import DiscordErrorPresenter
 from casino.discord_bot.presentation.notifications import GameNotificationPresenter
+from casino.discord_bot.presentation.baccarat import BaccaratPresenter
 from casino.discord_bot.presentation.jackpot import JackpotPresenter
 from casino.discord_bot.presentation.rain import RainPresenter
 from casino.discord_bot.presentation.table import GameTablePresenter
@@ -49,6 +50,7 @@ class CasinoBot(commands.Bot):
         self.tables = GameTablePresenter(self, container, self.notifications, self.admin_alerts)
         self.rains = RainPresenter(self, container)
         self.jackpots = JackpotPresenter(self, container)
+        self.baccarat_tables = BaccaratPresenter(self, container)
         self.tickets = TicketPresenter(self, container)
         container.deposits.set_listeners(
             on_credited=self.admin_alerts.on_player_deposit,
@@ -68,6 +70,10 @@ class CasinoBot(commands.Bot):
         self.container.jackpot_worker.set_listeners(
             on_settled=self.jackpots.on_settled,
             on_reset=self.jackpots.on_reset,
+        )
+        self.container.baccarat_worker.set_listeners(
+            on_settled=self.baccarat_tables.on_settled,
+            on_reset=self.baccarat_tables.on_reset,
         )
         await self.add_cog(BalanceCog(self, self.container))
         await self.add_cog(CoinflipCog(self, self.container))
@@ -123,6 +129,10 @@ class CasinoBot(commands.Bot):
             await self.jackpots.resume()
         except Exception:
             self._logger.exception("jackpot_resume_failed")
+        try:
+            await self.baccarat_tables.resume()
+        except Exception:
+            self._logger.exception("baccarat_resume_failed")
 
     async def on_app_command_error(
         self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError

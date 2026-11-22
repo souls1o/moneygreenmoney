@@ -61,6 +61,7 @@ async def test_house_withdraw_debits_and_sends_full_amount() -> None:
     assert result.signature == "withdraw-sig"
     assert rpc.sent == [(DESTINATION, 1_000_000_000)]
     assert house_repo.record.sol_balance_lamports == 1_000_000_000
+    assert house_repo.record.founder_shares == 1_000_000_000
     entry = next(item for item in ledger_repo.entries if item.type is LedgerEntryType.WITHDRAWAL)
     assert entry.amount_lamports == -amount.lamports
     tx = next(item for item in tx_repo.items.values() if item.type is TransactionType.WITHDRAWAL)
@@ -76,6 +77,7 @@ async def test_house_withdraw_refunds_book_when_send_fails() -> None:
         await service.withdraw_house(SolAmount.from_lamports(500_000_000), DESTINATION, "admin-1")
 
     assert house_repo.record.sol_balance_lamports == 2_000_000_000
+    assert house_repo.record.founder_shares == 2_000_000_000
     types = [item.type for item in ledger_repo.entries]
     assert LedgerEntryType.WITHDRAWAL in types
     assert LedgerEntryType.REFUND in types
@@ -85,11 +87,28 @@ async def test_house_withdraw_refunds_book_when_send_fails() -> None:
 async def test_house_withdraw_rejects_more_than_book() -> None:
     service, house_repo, _ledger_repo, rpc, _tx_repo = _service(house_lamports=100)
 
-    with pytest.raises(WithdrawalError, match="house book"):
+    with pytest.raises(WithdrawalError, match="founder share"):
         await service.withdraw_house(SolAmount.from_lamports(1_000_000_000), DESTINATION, "admin-1")
 
     assert rpc.sent == []
     assert house_repo.record.sol_balance_lamports == 100
+
+
+@pytest.mark.asyncio
+async def test_house_withdraw_cannot_take_investor_share() -> None:
+    service, house_repo, _ledger_repo, rpc, _tx_repo = _service(house_lamports=10_000_000_000)
+    house_repo.record.founder_shares = 9_000_000_000
+    house_repo.record.investor_shares = 1_000_000_000
+
+    with pytest.raises(WithdrawalError, match="founder share"):
+        await service.withdraw_house(SolAmount.parse("9.5"), DESTINATION, "admin-1")
+
+    result = await service.withdraw_house(SolAmount.parse("9"), DESTINATION, "admin-1")
+    assert result.amount.lamports == 9_000_000_000
+    assert rpc.sent == [(DESTINATION, 9_000_000_000)]
+    assert house_repo.record.sol_balance_lamports == 1_000_000_000
+    assert house_repo.record.founder_shares == 0
+    assert house_repo.record.investor_shares == 1_000_000_000
 
 
 @pytest.mark.asyncio

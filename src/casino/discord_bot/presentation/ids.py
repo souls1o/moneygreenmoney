@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from casino.domain.baccarat import BaccaratSide
 from casino.domain.blackjack import BlackjackAction
 
 
@@ -62,6 +63,9 @@ class ComponentIdCodec:
     MN_BET = "mn:bet:"
 
     def join(self, game_id: str) -> str:
+    BC_PLAYER = "bc:p:"
+    BC_BANKER = "bc:b:"
+    BC_TIE = "bc:t:"
         return f"{self.JOIN}{game_id}"
 
     def join_heads(self, game_id: str) -> str:
@@ -187,6 +191,28 @@ class ComponentIdCodec:
     def parse_blackjack(self, custom_id: str) -> BlackjackTarget | None:
         mapping = (
             (self.BJ_HIT, BlackjackAction.HIT),
+    def baccarat_player(self, baccarat_id: str) -> str:
+        return f"{self.BC_PLAYER}{baccarat_id}"
+
+    def baccarat_banker(self, baccarat_id: str) -> str:
+        return f"{self.BC_BANKER}{baccarat_id}"
+
+    def baccarat_tie(self, baccarat_id: str) -> str:
+        return f"{self.BC_TIE}{baccarat_id}"
+
+    def parse_baccarat_bet(self, custom_id: str) -> BaccaratBetTarget | None:
+        mapping = (
+            (self.BC_PLAYER, BaccaratSide.PLAYER),
+            (self.BC_BANKER, BaccaratSide.BANKER),
+            (self.BC_TIE, BaccaratSide.TIE),
+        )
+        for prefix, side in mapping:
+            if custom_id.startswith(prefix):
+                baccarat_id = custom_id[len(prefix) :]
+                if baccarat_id:
+                    return BaccaratBetTarget(baccarat_id=baccarat_id, side=side)
+        return None
+
             (self.BJ_STAND, BlackjackAction.STAND),
             (self.BJ_SPLIT, BlackjackAction.SPLIT),
             (self.BJ_DOUBLE, BlackjackAction.DOUBLE),

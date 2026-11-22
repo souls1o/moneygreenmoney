@@ -13,6 +13,7 @@ from casino.db.mongo import (
     COLLECTION_RATE_LIMITS,
     COLLECTION_TICKETS,
     COLLECTION_JACKPOTS,
+    COLLECTION_BACCARAT,
     COLLECTION_TRANSACTIONS,
     COLLECTION_USERS,
     MongoDatabase,
@@ -116,6 +117,14 @@ class IndexInstaller:
         await db[COLLECTION_JACKPOTS].create_indexes(
             [
                 IndexModel([("jackpotId", ASCENDING)], unique=True),
+                IndexModel([("guildId", ASCENDING), ("status", ASCENDING)]),
+                IndexModel([("status", ASCENDING), ("expiresAt", ASCENDING)]),
+                IndexModel([("status", ASCENDING), ("revealUntil", ASCENDING)]),
+            ]
+        )
+        await db[COLLECTION_BACCARAT].create_indexes(
+            [
+                IndexModel([("baccaratId", ASCENDING)], unique=True),
                 IndexModel([("guildId", ASCENDING), ("status", ASCENDING)]),
                 IndexModel([("status", ASCENDING), ("expiresAt", ASCENDING)]),
                 IndexModel([("status", ASCENDING), ("revealUntil", ASCENDING)]),

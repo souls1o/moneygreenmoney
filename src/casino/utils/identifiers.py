@@ -17,6 +17,7 @@ class IdentifierFactory:
         GameType.LIMBO: "lb",
         GameType.MINES: "mn",
         GameType.JACKPOT: "jp",
+        GameType.BACCARAT: "bc",
     }
     LEDGER_PREFIX = "ld"
     TX_PREFIX = "tx"
@@ -46,3 +47,6 @@ class IdentifierFactory:
 
     def jackpot_id(self) -> str:
         return f"jp_{uuid.uuid4().hex}"
+
+    def baccarat_id(self) -> str:
+        return f"bc_{uuid.uuid4().hex}"

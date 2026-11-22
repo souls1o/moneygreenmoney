@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from casino.domain.blackjack import BlackjackCard, BlackjackHand, BlackjackOutcome
+from casino.domain.baccarat import BaccaratSide
 from casino.domain.enums import (
+    BaccaratStatus,
     CoinSide,
     GameMode,
     GameStatus,
@@ -24,6 +26,7 @@ from casino.domain.records import (
     GuildConfigRecord,
     HouseTreasuryRecord,
     LedgerRecord,
+    BaccaratRecord,
     JackpotRecord,
     RainRecord,
     TicketRecord,
@@ -401,6 +404,9 @@ class DocumentMapper:
             "jackpotChannelId": config.jackpot_channel_id,
             "jackpotHistoryChannelId": config.jackpot_history_channel_id,
             "jackpotMessageId": config.jackpot_message_id,
+            "baccaratChannelId": config.baccarat_channel_id,
+            "baccaratHistoryChannelId": config.baccarat_history_channel_id,
+            "baccaratMessageId": config.baccarat_message_id,
             "version": config.version,
             "updatedAt": config.updated_at,
         }
@@ -438,6 +444,9 @@ class DocumentMapper:
             jackpot_channel_id=document.get("jackpotChannelId"),
             jackpot_history_channel_id=document.get("jackpotHistoryChannelId"),
             jackpot_message_id=document.get("jackpotMessageId"),
+            baccarat_channel_id=document.get("baccaratChannelId"),
+            baccarat_history_channel_id=document.get("baccaratHistoryChannelId"),
+            baccarat_message_id=document.get("baccaratMessageId"),
             version=int(document.get("version", 0)),
             updated_at=self._time.to_utc(document.get("updatedAt")),
         )
@@ -553,6 +562,85 @@ class DocumentMapper:
             winner_payout_lamports=int(document.get("winnerPayoutLamports") or 0),
             house_fee_lamports=int(document.get("houseFeeLamports") or 0),
             ticket=int(document["ticket"]) if document.get("ticket") is not None else None,
+            server_seed_hash=document.get("serverSeedHash") or "",
+            server_seed=document.get("serverSeed"),
+            client_seed=document.get("clientSeed") or "",
+            client_seeds={
+                str(key): str(value) for key, value in (document.get("clientSeeds") or {}).items()
+            },
+            nonce=int(document.get("nonce") or 0),
+            fair_digest=document.get("fairDigest") or "",
+            ledger_ids=list(document.get("ledgerIds") or []),
+            version=int(document.get("version", 0)),
+            created_at=self._time.to_utc(document.get("createdAt")),
+            expires_at=self._time.to_utc(document.get("expiresAt")),
+            reveal_until=self._time.to_utc(document.get("revealUntil")),
+            resolved_at=self._time.to_utc(document.get("resolvedAt")),
+        )
+
+    def baccarat_to_document(self, table: BaccaratRecord) -> dict[str, Any]:
+        document: dict[str, Any] = {
+            "baccaratId": table.baccarat_id,
+            "status": table.status.value,
+            "guildId": table.guild_id,
+            "betsLamports": {key: int(value) for key, value in table.bets_lamports.items()},
+            "betsSides": {key: str(value) for key, value in table.bets_sides.items()},
+            "reservedLamports": {key: int(value) for key, value in table.reserved_lamports.items()},
+            "payoutsLamports": {key: int(value) for key, value in table.payouts_lamports.items()},
+            "playerCards": [self._blackjack_card_to_document(card) for card in table.player_cards],
+            "bankerCards": [self._blackjack_card_to_document(card) for card in table.banker_cards],
+            "housePnlLamports": table.house_pnl_lamports,
+            "serverSeedHash": table.server_seed_hash,
+            "clientSeed": table.client_seed,
+            "clientSeeds": {key: str(value) for key, value in table.client_seeds.items()},
+            "nonce": table.nonce,
+            "fairDigest": table.fair_digest,
+            "ledgerIds": list(table.ledger_ids),
+            "version": table.version,
+            "createdAt": table.created_at,
+        }
+        if table.opener_id:
+            document["openerId"] = table.opener_id
+        if table.channel_id:
+            document["channelId"] = table.channel_id
+        if table.message_id:
+            document["messageId"] = table.message_id
+        if table.history_message_id:
+            document["historyMessageId"] = table.history_message_id
+        if table.outcome is not None:
+            document["outcome"] = table.outcome.value
+        if table.server_seed:
+            document["serverSeed"] = table.server_seed
+        if table.expires_at:
+            document["expiresAt"] = table.expires_at
+        if table.reveal_until:
+            document["revealUntil"] = table.reveal_until
+        if table.resolved_at:
+            document["resolvedAt"] = table.resolved_at
+        return document
+
+    def baccarat_from_document(self, document: dict[str, Any]) -> BaccaratRecord:
+        bets = document.get("betsLamports") or {}
+        sides = document.get("betsSides") or {}
+        reserved = document.get("reservedLamports") or {}
+        payouts = document.get("payoutsLamports") or {}
+        outcome = document.get("outcome")
+        return BaccaratRecord(
+            baccarat_id=document["baccaratId"],
+            status=BaccaratStatus(document["status"]),
+            guild_id=document["guildId"],
+            opener_id=document.get("openerId"),
+            bets_lamports={str(key): int(value) for key, value in bets.items()},
+            bets_sides={str(key): str(value) for key, value in sides.items()},
+            reserved_lamports={str(key): int(value) for key, value in reserved.items()},
+            payouts_lamports={str(key): int(value) for key, value in payouts.items()},
+            channel_id=document.get("channelId"),
+            message_id=document.get("messageId"),
+            history_message_id=document.get("historyMessageId"),
+            outcome=BaccaratSide(outcome) if outcome else None,
+            player_cards=self._blackjack_cards_from_document(document.get("playerCards")),
+            banker_cards=self._blackjack_cards_from_document(document.get("bankerCards")),
+            house_pnl_lamports=int(document.get("housePnlLamports") or 0),
             server_seed_hash=document.get("serverSeedHash") or "",
             server_seed=document.get("serverSeed"),
             client_seed=document.get("clientSeed") or "",

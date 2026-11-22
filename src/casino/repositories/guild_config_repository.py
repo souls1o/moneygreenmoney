@@ -39,6 +39,8 @@ _SLOT_FIELDS: dict[GuildConfigSlot, str] = {
     GuildConfigSlot.SUPPORT_LOGS: "supportLogsChannelId",
     GuildConfigSlot.JACKPOT: "jackpotChannelId",
     GuildConfigSlot.JACKPOT_HISTORY: "jackpotHistoryChannelId",
+    GuildConfigSlot.BACCARAT: "baccaratChannelId",
+    GuildConfigSlot.BACCARAT_HISTORY: "baccaratHistoryChannelId",
 }
 
 
@@ -168,6 +170,26 @@ class GuildConfigRepository(MongoRepository):
             {"guildId": guild_id},
             {
                 "$set": {"supportMessageId": message_id, "updatedAt": now},
+                "$inc": {"version": 1},
+                "$setOnInsert": {"guildId": guild_id},
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        return self._mapper.guild_config_from_document(document)
+
+    async def set_baccarat_message(
+        self,
+        guild_id: str,
+        message_id: str,
+        now: datetime,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> GuildConfigRecord:
+        document = await self.collection.find_one_and_update(
+            {"guildId": guild_id},
+            {
+                "$set": {"baccaratMessageId": message_id, "updatedAt": now},
                 "$inc": {"version": 1},
                 "$setOnInsert": {"guildId": guild_id},
             },

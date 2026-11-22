@@ -23,6 +23,7 @@ from casino.domain.records import (
     DiceTurnEvent,
     GameRecord,
     HOUSE_USER_ID,
+    BaccaratRecord,
     JackpotRecord,
     PlayerProfileStats,
     is_house_seat,
@@ -39,6 +40,7 @@ from casino.errors import GameError, InsufficientHouseReserveError, NotFoundErro
 from casino.logging.logger import LogContext, get_logger
 from casino.repositories.game_repository import GameRepository
 from casino.repositories.house_repository import HouseRepository
+from casino.repositories.baccarat_repository import BaccaratRepository
 from casino.repositories.jackpot_repository import JackpotRepository
 from casino.repositories.user_repository import UserRepository
 from casino.services.affiliate_service import AffiliateService
@@ -72,6 +74,7 @@ class GameService:
         house_repository: HouseRepository,
         affiliates: AffiliateService | None = None,
         jackpot_repository: JackpotRepository | None = None,
+        baccarat_repository: BaccaratRepository | None = None,
     ) -> None:
         self._games = game_repository
         self._users = user_repository
@@ -90,6 +93,7 @@ class GameService:
             user_repository, user_service, balance_service, clock
         )
         self._jackpots = jackpot_repository
+        self._baccarat = baccarat_repository
         self._logger = get_logger("casino.game")
 
     async def create_game(
@@ -662,6 +666,9 @@ class GameService:
         if self._jackpots is not None:
             for jackpot in await self._jackpots.list_completed_by_player(discord_id):
                 games.append(await self._jackpot_as_history_game(jackpot, discord_id))
+        if self._baccarat is not None:
+            for table in await self._baccarat.list_completed_by_player(discord_id):
+                games.append(await self._baccarat_as_history_game(table, discord_id))
         games.sort(key=self._history_sort_key, reverse=True)
         return games
 
@@ -688,6 +695,30 @@ class GameService:
             max_players=max(len(jackpot.entries_lamports), 1),
             resolved_at=jackpot.resolved_at or jackpot.created_at,
             created_at=jackpot.created_at,
+        )
+
+    async def _baccarat_as_history_game(self, table: BaccaratRecord, discord_id: str) -> GameRecord:
+        stake = int(table.bets_lamports.get(discord_id, 0))
+        payout = int(table.payouts_lamports.get(discord_id, 0))
+        stake_usd = await self._usd_for_lamports(stake)
+        return GameRecord(
+            game_id=table.baccarat_id,
+            status=GameStatus.COMPLETED,
+            creator_id=table.opener_id or discord_id,
+            bet_amount_lamports=stake,
+            currency="USD",
+            bet_amount_fiat=stake_usd,
+            bet_amount_usd=stake_usd,
+            player_wager_lamports={discord_id: stake},
+            game_type=GameType.BACCARAT,
+            heads_ids=list(table.bets_lamports),
+            winner_id=discord_id if payout > stake else None,
+            winner_ids=[discord_id] if payout > stake else [],
+            winner_payout_lamports=payout,
+            per_winner_payout_lamports=payout,
+            max_players=max(len(table.bets_lamports), 1),
+            resolved_at=table.resolved_at or table.created_at,
+            created_at=table.created_at,
         )
 
     async def _usd_for_lamports(self, lamports: int) -> Decimal:

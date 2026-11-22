@@ -11,6 +11,7 @@ class GameType(StrEnum):
     LIMBO = "limbo"
     MINES = "mines"
     JACKPOT = "jackpot"
+    BACCARAT = "baccarat"
 
 
 class GameMode(StrEnum):
@@ -108,6 +109,8 @@ class GuildConfigSlot(StrEnum):
     SUPPORT_LOGS = "support_logs"
     JACKPOT = "jackpot"
     JACKPOT_HISTORY = "jackpot_history"
+    BACCARAT = "baccarat"
+    BACCARAT_HISTORY = "baccarat_history"
 
     def is_category(self) -> bool:
         return self in {
@@ -126,6 +129,8 @@ class GuildConfigSlot(StrEnum):
             return cls.TARGET_OUTCOMES
         if game_type is GameType.JACKPOT:
             return cls.JACKPOT_HISTORY
+        if game_type is GameType.BACCARAT:
+            return cls.BACCARAT_HISTORY
         return cls.COINFLIP_OUTCOMES
 
     @classmethod
@@ -136,6 +141,14 @@ class GuildConfigSlot(StrEnum):
 
 
 class JackpotStatus(StrEnum):
+    OPEN = "open"
+    SETTLING = "settling"
+    SHOWING = "showing"
+    COMPLETED = "completed"
+    REFUNDED = "refunded"
+
+
+class BaccaratStatus(StrEnum):
     OPEN = "open"
     SETTLING = "settling"
     SHOWING = "showing"

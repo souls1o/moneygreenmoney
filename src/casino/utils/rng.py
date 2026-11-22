@@ -6,6 +6,7 @@ import secrets
 from dataclasses import dataclass
 from decimal import Decimal
 
+from casino.domain.baccarat import BaccaratDeal, deal_baccarat
 from casino.domain.blackjack import BLACKJACK_SHOE_SIZE, BlackjackCard, card_from_index
 from casino.domain.enums import CoinSide
 from casino.domain.limbo import crash_from_digest
@@ -53,6 +54,12 @@ class FairJackpot:
     digest: str
     ticket: int
     winner_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class FairBaccarat:
+    digest: str
+    deal: BaccaratDeal
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +228,19 @@ class ProvablyFairService:
             die_b=die_b,
             roll_index=roll_index,
         )
+
+    def resolve_baccarat(self, server_seed: str, client_seed: str, nonce: int) -> FairBaccarat:
+        digest = ""
+        draws = 0
+
+        def draw() -> BlackjackCard:
+            nonlocal digest, draws
+            fair = self.resolve_card(server_seed, client_seed, nonce, draws)
+            digest = fair.digest
+            draws += 1
+            return fair.card
+
+        return FairBaccarat(digest=digest, deal=deal_baccarat(draw))
 
     def resolve_jackpot(
         self,

@@ -226,7 +226,7 @@ class InvestorService:
                 )
             )
             raise WithdrawalError(
-                "That would take investor capital from the house book. "
+                "House withdrawals can only come from founder share. "
                 f"Founder can withdraw up to `{self._math.format_sol(cap)} SOL`."
             )
         return burned

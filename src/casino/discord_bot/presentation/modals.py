@@ -66,13 +66,13 @@ class HouseWithdrawModal(discord.ui.Modal):
         *,
         balance_text: str,
     ) -> None:
-        super().__init__(title=f"House withdraw · {balance_text}"[:45])
+        super().__init__(title=f"Founder withdraw · {balance_text}"[:45])
         self._container = container
         self._embeds = EmbedFactory(container)
         self._errors = errors
         self.amount = discord.ui.TextInput(
             label="Amount in USD",
-            placeholder=f"House book {balance_text}",
+            placeholder=f"Founder share {balance_text}",
         )
         self.destination = discord.ui.TextInput(
             label="Destination wallet",
@@ -491,6 +491,54 @@ class MinesBetModal(discord.ui.Modal, title="Change bet"):
                 await interaction.followup.send(**panel.send_kwargs(ephemeral=True))
             else:
                 await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+
+
+class BaccaratBetModal(discord.ui.Modal, title="Baccarat bet"):
+    amount = discord.ui.TextInput(label="Amount", placeholder="5", max_length=16)
+
+    def __init__(
+        self,
+        container: AppContainer,
+        embeds: EmbedFactory,
+        errors: DiscordErrorPresenter,
+        baccarat_id: str,
+        side,
+        *,
+        hint: str = "",
+    ) -> None:
+        super().__init__(title=f"Baccarat · {side.label()}"[:45])
+        self._container = container
+        self._embeds = embeds
+        self._errors = errors
+        self._baccarat_id = baccarat_id
+        self._side = side
+        if hint:
+            self.amount.placeholder = hint[:100]
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from casino.discord_bot.bot import CasinoBot
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            fiat = self._container.validation.parse_fiat_amount(str(self.amount.value))
+            table = await self._container.baccarat.place_bet(
+                self._baccarat_id, str(interaction.user.id), self._side, fiat
+            )
+            bot = interaction.client
+            if isinstance(bot, CasinoBot):
+                await bot.baccarat_tables.on_joined(table)
+                panel = self._embeds.baccarat_fairness_lock(table)
+                await interaction.followup.send(**panel.send_kwargs(ephemeral=True))
+                panel.stop()
+        except Exception as exc:
+            await interaction.followup.send(**self._errors.panel_for(exc).send_kwargs(ephemeral=True))
+            return
+        await interaction.followup.send(
+            **self._embeds.success(
+                "Bet placed",
+                f"You are on **{self._side.label()}** this round.",
+            ).send_kwargs(ephemeral=True)
+        )
 
 
 class JackpotJoinModal(discord.ui.Modal, title="Join jackpot"):

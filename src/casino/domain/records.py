@@ -5,7 +5,9 @@ from datetime import datetime
 from decimal import Decimal
 
 from casino.domain.blackjack import BlackjackAction, BlackjackCard, BlackjackHand, legal_actions
+from casino.domain.baccarat import BaccaratSide
 from casino.domain.enums import (
+    BaccaratStatus,
     CoinSide,
     GameMode,
     GameStatus,
@@ -220,8 +222,11 @@ class GameRecord:
     def is_jackpot(self) -> bool:
         return self.game_type is GameType.JACKPOT
 
+    def is_baccarat(self) -> bool:
+        return self.game_type is GameType.BACCARAT
+
     def is_vs_house(self) -> bool:
-        return self.is_blackjack() or self.is_limbo() or self.is_mines()
+        return self.is_blackjack() or self.is_limbo() or self.is_mines() or self.is_baccarat()
 
     def current_blackjack_hand(self) -> BlackjackHand | None:
         if not self.blackjack_player_hands:
@@ -447,8 +452,10 @@ class GameRecord:
         stake = self.stake_usd()
         if not self.winner_ids:
             return Decimal("0")
-        if self.is_limbo() or self.is_mines() or self.is_jackpot():
+        if self.is_limbo() or self.is_mines() or self.is_jackpot() or self.is_baccarat():
             payout = self._vs_house_payout_fiat()
+            if self.is_baccarat():
+                return payout - stake
             if is_house_seat(player_id):
                 return stake if self.player_won(player_id) else stake - payout
             return payout - stake if self.player_won(player_id) else -stake
@@ -473,6 +480,8 @@ class GameRecord:
 
     def player_profit_lamports(self, player_id: str) -> int:
         stake = self.wager_for(player_id).lamports
+        if self.is_baccarat():
+            return int(self.per_winner_payout_lamports) - stake
         if not self.winner_ids:
             return 0
         if not self.player_won(player_id):
@@ -538,6 +547,9 @@ class GuildConfigRecord:
     jackpot_channel_id: str | None = None
     jackpot_history_channel_id: str | None = None
     jackpot_message_id: str | None = None
+    baccarat_channel_id: str | None = None
+    baccarat_history_channel_id: str | None = None
+    baccarat_message_id: str | None = None
     version: int = 0
     updated_at: datetime | None = None
 
@@ -552,6 +564,8 @@ class GuildConfigRecord:
             return self.blackjack_outcomes_channel_id
         if game_type is GameType.JACKPOT:
             return self.jackpot_history_channel_id
+        if game_type is GameType.BACCARAT:
+            return self.baccarat_history_channel_id
         return self.coinflip_outcomes_channel_id
 
     def listing_channel_id(self, game_type: GameType) -> str | None:
@@ -653,6 +667,61 @@ class JackpotRecord:
 
     def is_showing(self) -> bool:
         return self.status is JackpotStatus.SHOWING
+
+
+@dataclass(slots=True)
+class BaccaratRecord:
+    baccarat_id: str
+    status: BaccaratStatus
+    guild_id: str
+    opener_id: str | None = None
+    bets_lamports: dict[str, int] = field(default_factory=dict)
+    bets_sides: dict[str, str] = field(default_factory=dict)
+    reserved_lamports: dict[str, int] = field(default_factory=dict)
+    payouts_lamports: dict[str, int] = field(default_factory=dict)
+    channel_id: str | None = None
+    message_id: str | None = None
+    history_message_id: str | None = None
+    outcome: BaccaratSide | None = None
+    player_cards: list[BlackjackCard] = field(default_factory=list)
+    banker_cards: list[BlackjackCard] = field(default_factory=list)
+    house_pnl_lamports: int = 0
+    server_seed_hash: str = ""
+    server_seed: str | None = None
+    client_seed: str = ""
+    client_seeds: dict[str, str] = field(default_factory=dict)
+    nonce: int = 0
+    fair_digest: str = ""
+    ledger_ids: list[str] = field(default_factory=list)
+    version: int = 0
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
+    reveal_until: datetime | None = None
+    resolved_at: datetime | None = None
+
+    def pot_lamports(self) -> int:
+        return sum(int(value) for value in self.bets_lamports.values())
+
+    def reserved_total(self) -> int:
+        return sum(int(value) for value in self.reserved_lamports.values())
+
+    def has_bet(self, player_id: str) -> bool:
+        return player_id in self.bets_lamports
+
+    def side_of(self, player_id: str) -> BaccaratSide | None:
+        raw = self.bets_sides.get(player_id)
+        if not raw:
+            return None
+        return BaccaratSide(raw)
+
+    def player_ids(self) -> list[str]:
+        return list(self.bets_lamports)
+
+    def is_open(self) -> bool:
+        return self.status is BaccaratStatus.OPEN
+
+    def is_showing(self) -> bool:
+        return self.status is BaccaratStatus.SHOWING
 
 
 @dataclass(slots=True)

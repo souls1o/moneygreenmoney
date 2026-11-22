@@ -13,12 +13,14 @@ from casino.domain.affiliate import (
     format_affiliate_rate,
     next_affiliate_tier,
 )
+from casino.domain.baccarat import BaccaratSide, baccarat_total
 from casino.domain.blackjack import BlackjackAction, BlackjackOutcome, hand_total
 from casino.domain.limbo import LIMBO_START, format_limbo_multiplier
 from casino.domain.mines import MINES_TILES, format_mines_multiplier, mines_multiplier
 from casino.domain.rain import RAIN_JOIN_STATUS, RainJoinEligibility
 from casino.domain.investor import InvestorPosition
 from casino.domain.enums import (
+    BaccaratStatus,
     CoinSide,
     GameMode,
     GameStatus,
@@ -32,6 +34,7 @@ from casino.domain.records import (
     DiceRollRecord,
     DiceTurnEvent,
     GameRecord,
+    BaccaratRecord,
     GuildConfigRecord,
     HouseStatsReport,
     JackpotRecord,
@@ -477,6 +480,104 @@ class EmbedFactory:
         else:
             builder.field("Server seed hash", f"`{jackpot.server_seed_hash}`")
         return builder.build()
+
+    def baccarat_table(self, table: BaccaratRecord, *, history: bool = False) -> CasinoPanel:
+        showing = table.status is BaccaratStatus.SHOWING or history
+        if showing and table.outcome is not None:
+            description = (
+                f"**{table.outcome.label()}** wins. "
+                "Player pays **1:1**. Banker pays **0.95:1**. Tie pays **8:1**. "
+                "Player and banker bets push on a tie."
+            )
+        else:
+            description = (
+                "Bet **Player**, **Banker**, or **Tie** on this table. "
+                "First bet starts a **30 second** deal. Anyone can join that round. "
+                "Player **1:1**, Banker **0.95:1**, Tie **8:1**. No extra 3% game fee."
+            )
+        builder = self.builder("Baccarat" if not history else "Baccarat result", description=description).persistent()
+        if showing and table.player_cards:
+            builder.field(
+                "Player",
+                f"{' '.join(card.label for card in table.player_cards)}  ·  **{baccarat_total(table.player_cards)}**",
+            )
+            builder.field(
+                "Banker",
+                f"{' '.join(card.label for card in table.banker_cards)}  ·  **{baccarat_total(table.banker_cards)}**",
+            )
+        elif table.status is BaccaratStatus.OPEN and table.expires_at is not None:
+            builder.field(
+                "Deals",
+                f"{discord.utils.format_dt(table.expires_at, style='F')} "
+                f"({discord.utils.format_dt(table.expires_at, style='R')})",
+            )
+        players = table.player_ids()
+        if players:
+            lines: list[str] = []
+            extra = 0
+            for player_id in players:
+                if len(lines) >= 15:
+                    extra += 1
+                    continue
+                side = table.side_of(player_id)
+                bet = int(table.bets_lamports[player_id])
+                payout = int(table.payouts_lamports.get(player_id, 0)) if showing else 0
+                marker = ""
+                if showing:
+                    if payout > bet:
+                        marker = " · win"
+                    elif payout == bet and bet:
+                        marker = " · push"
+                    else:
+                        marker = " · lose"
+                lines.append(
+                    f"{self._mention(player_id)} · {side.label() if side else '—'} · "
+                    f"{self._lamports_usd(bet)}{marker}"
+                )
+            if extra:
+                lines.append(f"+{extra} more")
+            builder.field("Bets", "\n".join(lines))
+        else:
+            builder.field("Bets", "Waiting for the first bet.")
+        if table.status is BaccaratStatus.OPEN and not history:
+            builder.button(
+                "Player 1:1",
+                style=discord.ButtonStyle.success,
+                custom_id=self._ids.baccarat_player(table.baccarat_id),
+            )
+            builder.button(
+                "Banker 0.95:1",
+                style=discord.ButtonStyle.primary,
+                custom_id=self._ids.baccarat_banker(table.baccarat_id),
+            )
+            builder.button(
+                "Tie 8:1",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.baccarat_tie(table.baccarat_id),
+            )
+        if showing:
+            builder.field("Server seed", f"`{table.server_seed or '—'}`")
+            builder.field("Client seed", f"`{table.client_seed}`")
+            builder.field("Nonce", str(table.nonce))
+        else:
+            builder.field("Server seed hash", f"`{table.server_seed_hash}`")
+        return builder.build()
+
+    def baccarat_fairness_lock(self, table: BaccaratRecord) -> CasinoPanel:
+        return (
+            self.builder(
+                "Fairness lock",
+                description=(
+                    "These values were locked for this baccarat round. "
+                    "The server seed stays hidden until the deal. "
+                    "Change your client seed in `/settings` before the next round."
+                ),
+            )
+            .field("Server seed hash", f"`{table.server_seed_hash}`")
+            .field("Client seed", f"`{table.client_seed}`")
+            .field("Nonce", str(table.nonce))
+            .build()
+        )
 
     async def limbo_panel(
         self,
@@ -1171,11 +1272,10 @@ class EmbedFactory:
     async def _on_house_withdraw(self, interaction: discord.Interaction) -> None:
         try:
             self._require_house_stats_admin(interaction)
-            treasury = await self._container.admin.house_treasury()
+            founder = await self._container.admin.founder_withdrawable()
             quote = await self._container.price.get_quote(allow_stale=True)
-            house = SolAmount.from_lamports(treasury.sol_balance_lamports)
             balance_text = self._container.math.format_fiat_symbol(
-                self._container.math.sol_to_fiat(house, quote.sol_price("USD")),
+                self._container.math.sol_to_fiat(founder, quote.sol_price("USD")),
                 "USD",
             )
             from casino.discord_bot.presentation.errors import DiscordErrorPresenter
@@ -1263,6 +1363,9 @@ class EmbedFactory:
                     "**Target** — `/target <amount>` opens a table in the channel you used. Set **1v1 / 1v1v1 / 1v1v1v1**, "
                     "then **Create table**. Players **Lock number** (1–999). Closest to the HMAC draw wins. "
                     "If everyone is equally close, it's a push; if a subset ties closest, they split.\n"
+                    "**Baccarat** — no command. Use the persistent table in the configured channel. "
+                    "Bet Player, Banker, or Tie; first bet starts a 30 second deal. "
+                    "Player 1:1, Banker 0.95:1, Tie 8:1. No extra 3% game fee.\n"
                 ),
             )
             .divider()
@@ -1270,9 +1373,9 @@ class EmbedFactory:
                 "Fees",
                 (
                     f"PvP games take **{fee} of the total pot** when they resolve. "
-                    "Blackjack has no extra game fee. Limbo and mines put a 3% edge in the odds. "
+                    "Blackjack and baccarat have no extra game fee. Limbo and mines put a 3% edge in the odds. "
                     f"Minimum bet is **{min_bet}**. There is no player vs player max. "
-                    "Blackjack, limbo, and mines max bet is **10% of the house book**. "
+                    "Blackjack, limbo, mines, and baccarat max bet is **10% of the house book**. "
                     "House-bot exposure on coinflip and dice is also **10% of the house book** per table."
                 ),
             )
@@ -1482,7 +1585,7 @@ class EmbedFactory:
                 description=(
                     "Set the open coinflip and dice lobbies, outcome channels, private-table categories, "
                     "the rain channel and optional rain ping, the verify channel and member role, "
-                    "jackpot and jackpot history, "
+                    "jackpot, baccarat, and history channels, "
                     "the investor role, support tickets, the provably fair panel, and admin alert channels. "
                     "Blackjack and target open in the channel where the command is used."
                 ),
@@ -1497,6 +1600,8 @@ class EmbedFactory:
             .field("Target outcomes", self._channel(config.target_outcomes_channel_id))
             .field("Jackpot", self._channel(config.jackpot_channel_id))
             .field("Jackpot history", self._channel(config.jackpot_history_channel_id))
+            .field("Baccarat", self._channel(config.baccarat_channel_id))
+            .field("Baccarat history", self._channel(config.baccarat_history_channel_id))
             .field("Rain", self._channel(config.rain_channel_id))
             .field("Rain ping", self._role(config.rain_ping_role_id))
             .field("Verify", self._channel(config.verify_channel_id))

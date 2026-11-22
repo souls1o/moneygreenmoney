@@ -101,6 +101,12 @@ class JackpotError(AppError):
     http_status = 409
 
 
+class BaccaratError(AppError):
+    code = "baccarat_error"
+    user_message = "This baccarat table cannot be completed."
+    http_status = 409
+
+
 class TicketError(AppError):
     code = "ticket_error"
     user_message = "This ticket cannot be completed."

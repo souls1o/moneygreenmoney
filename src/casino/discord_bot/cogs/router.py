@@ -11,6 +11,7 @@ from casino.discord_bot.presentation.ids import ComponentIdCodec
 from casino.discord_bot.presentation.modals import (
     ProvablyFairCheckModal,
     BlackjackBetModal,
+    BaccaratBetModal,
     JackpotJoinModal,
     LimboBetModal,
     MinesBetModal,
@@ -135,6 +136,8 @@ class ComponentRouterCog(commands.Cog):
             elif (jackpot_id := self._ids.parse_jackpot_join(custom_id)):
                 await self._on_jackpot_join(interaction, jackpot_id)
             elif (target := self._ids.parse_history(custom_id)):
+            elif (target := self._ids.parse_baccarat_bet(custom_id)):
+                await self._on_baccarat_bet(interaction, target.baccarat_id, target.side)
                 await self._on_history(interaction, target.user_id, target.page)
             elif custom_id == self._ids.TICKET_TOPIC:
                 await self._on_ticket_topic(interaction)
@@ -393,6 +396,23 @@ class ComponentRouterCog(commands.Cog):
             )
 
     async def _on_jackpot_join(self, interaction: discord.Interaction, jackpot_id: str) -> None:
+    async def _on_baccarat_bet(self, interaction: discord.Interaction, baccarat_id: str, side) -> None:
+        table = await self._container.baccarat.get(baccarat_id)
+        if not table.is_open():
+            from casino.errors import BaccaratError
+
+            raise BaccaratError("This round is not accepting bets.")
+        await interaction.response.send_modal(
+            BaccaratBetModal(
+                self._container,
+                self._embeds,
+                self._errors,
+                baccarat_id,
+                side,
+                hint="Any amount of your balance",
+            )
+        )
+
         from casino.domain.jackpot import max_join_lamports
         from casino.utils.money import SolAmount
 

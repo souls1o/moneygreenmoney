@@ -19,6 +19,7 @@ COLLECTION_GUILD_CONFIGS = "guild_configs"
 COLLECTION_RAINS = "rains"
 COLLECTION_TICKETS = "tickets"
 COLLECTION_JACKPOTS = "jackpots"
+COLLECTION_BACCARAT = "baccarat"
 
 
 class MongoDatabase:

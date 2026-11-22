@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from casino.domain.blackjack import BlackjackHand
 from casino.domain.enums import (
+    BaccaratStatus,
     CoinSide,
     GameStatus,
     JackpotStatus,
@@ -804,6 +805,124 @@ class MemoryJackpotRepository:
             entries_lamports=dict(jackpot.entries_lamports),
             client_seeds=dict(jackpot.client_seeds),
             ledger_ids=list(jackpot.ledger_ids),
+        )
+
+
+class MemoryBaccaratRepository:
+    def __init__(self) -> None:
+        self.items: dict[str, BaccaratRecord] = {}
+
+    async def insert(self, table: BaccaratRecord, session=None) -> None:
+        self.items[table.baccarat_id] = table
+
+    async def find_by_id(self, baccarat_id: str, session=None) -> BaccaratRecord | None:
+        return self._clone(self.items.get(baccarat_id))
+
+    async def find_live(self, guild_id: str, session=None) -> BaccaratRecord | None:
+        for table in self.items.values():
+            if table.guild_id == guild_id and table.status in {
+                BaccaratStatus.OPEN,
+                BaccaratStatus.SHOWING,
+                BaccaratStatus.SETTLING,
+            }:
+                return self._clone(table)
+        return None
+
+    async def replace(self, table: BaccaratRecord, session=None) -> bool:
+        current = self.items.get(table.baccarat_id)
+        if current is None or current.version != table.version:
+            return False
+        table.version += 1
+        self.items[table.baccarat_id] = table
+        return True
+
+    async def set_listing_ref(self, baccarat_id: str, channel_id: str, message_id: str, session=None) -> None:
+        table = self.items[baccarat_id]
+        table.channel_id = channel_id
+        table.message_id = message_id
+
+    async def set_history_ref(self, baccarat_id: str, message_id: str, session=None) -> None:
+        table = self.items[baccarat_id]
+        table.history_message_id = message_id
+
+    async def list_due(self, now, session=None) -> list[BaccaratRecord]:
+        return [
+            self._clone(table)
+            for table in self.items.values()
+            if table.status is BaccaratStatus.OPEN
+            and table.opener_id is not None
+            and table.expires_at is not None
+            and table.expires_at <= now
+        ]
+
+    async def list_reveal_due(self, now, session=None) -> list[BaccaratRecord]:
+        return [
+            self._clone(table)
+            for table in self.items.values()
+            if table.status is BaccaratStatus.SHOWING
+            and table.reveal_until is not None
+            and table.reveal_until <= now
+        ]
+
+    async def list_completed_since(self, since: datetime | None = None) -> list[BaccaratRecord]:
+        matches = [
+            self._clone(table)
+            for table in self.items.values()
+            if table.status is BaccaratStatus.COMPLETED
+            and (
+                since is None
+                or (table.resolved_at is not None and table.resolved_at >= since)
+            )
+        ]
+        matches.sort(
+            key=lambda table: table.resolved_at or table.created_at or datetime.min,
+            reverse=True,
+        )
+        return matches
+
+    async def list_completed_by_player(self, discord_id: str) -> list[BaccaratRecord]:
+        matches = [
+            self._clone(table)
+            for table in self.items.values()
+            if table.status in {BaccaratStatus.COMPLETED, BaccaratStatus.REFUNDED}
+            and discord_id in table.bets_lamports
+        ]
+        matches.sort(
+            key=lambda table: table.resolved_at or table.created_at or datetime.min,
+            reverse=True,
+        )
+        return matches
+
+    async def list_live(self, session=None) -> list[BaccaratRecord]:
+        return [
+            self._clone(table)
+            for table in self.items.values()
+            if table.status in {BaccaratStatus.OPEN, BaccaratStatus.SHOWING, BaccaratStatus.SETTLING}
+        ]
+
+    async def try_begin_settle(self, baccarat_id: str, now, session=None) -> BaccaratRecord | None:
+        table = self.items.get(baccarat_id)
+        if table is None or table.status is not BaccaratStatus.OPEN:
+            return None
+        if table.opener_id is None or table.expires_at is None or table.expires_at > now:
+            return None
+        table.status = BaccaratStatus.SETTLING
+        table.version += 1
+        return self._clone(table)
+
+    def _clone(self, table: BaccaratRecord | None) -> BaccaratRecord | None:
+        if table is None:
+            return None
+        return replace(
+            table,
+            bets_lamports=dict(table.bets_lamports),
+            bets_sides=dict(table.bets_sides),
+            reserved_lamports=dict(table.reserved_lamports),
+            payouts_lamports=dict(table.payouts_lamports),
+            client_seeds=dict(table.client_seeds),
+            ledger_ids=list(table.ledger_ids),
+            player_cards=list(table.player_cards),
+            banker_cards=list(table.banker_cards),
         )
 
 

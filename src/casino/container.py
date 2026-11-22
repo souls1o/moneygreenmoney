@@ -15,6 +15,7 @@ from casino.repositories.cursor_repository import CursorRepository
 from casino.repositories.game_repository import GameRepository
 from casino.repositories.guild_config_repository import GuildConfigRepository
 from casino.repositories.house_repository import HouseRepository
+from casino.repositories.baccarat_repository import BaccaratRepository
 from casino.repositories.jackpot_repository import JackpotRepository
 from casino.repositories.ledger_repository import LedgerRepository
 from casino.repositories.lock_repository import LockRepository
@@ -62,6 +63,7 @@ from casino.workers.deposit_worker import DepositMonitorWorker
 from casino.workers.expiry_worker import GameExpiryWorker
 from casino.workers.locks import DistributedLockService
 from casino.workers.jackpot_worker import JackpotWorker
+from casino.workers.baccarat_worker import BaccaratWorker
 from casino.workers.rain_worker import RainExpiryWorker
 from casino.workers.scheduler import WorkerScheduler
 
@@ -94,6 +96,7 @@ class AppContainer:
     rains: RainService
     jackpots: JackpotService
     tickets: TicketService
+    baccarat: BaccaratService
     tips: TipService
     workers: WorkerScheduler
     deposit_worker: DepositMonitorWorker
@@ -102,6 +105,7 @@ class AppContainer:
     rain_worker: RainExpiryWorker
     jackpot_worker: JackpotWorker
     house: HouseRepository
+    baccarat_worker: BaccaratWorker
     fair: ProvablyFairService
 
     async def startup(self) -> None:
@@ -130,6 +134,11 @@ class AppContainer:
             self.jackpot_worker.tick,
         )
         if self.settings.enable_deposit_monitor and self.solana.is_configured:
+        self.workers.start(
+            "baccarat",
+            self.settings.expiry_poll_interval_seconds,
+            self.baccarat_worker.tick,
+        )
             self.workers.start(
                 "deposit-monitor",
                 self.settings.deposit_poll_interval_seconds,
@@ -180,6 +189,7 @@ class ContainerFactory:
         rate_repo = RateLimitRepository(mongo)
         jackpots_repo = JackpotRepository(mongo, mapper)
 
+        baccarat_repo = BaccaratRepository(mongo, mapper)
         custody = CustodyService(solana, house_repo)
         uow = HouseWalletSyncingUnitOfWorkFactory(uow, custody)
 
@@ -213,6 +223,7 @@ class ContainerFactory:
             affiliates,
             jackpot_repository=jackpots_repo,
         )
+            baccarat_repository=baccarat_repo,
         guild_configs = GuildConfigService(guild_config_repo, clock)
         verification = VerificationService(clock)
         house_stats = HouseStatsService(
@@ -223,6 +234,7 @@ class ContainerFactory:
             solana,
             jackpot_repository=jackpots_repo,
             transaction_repository=tx_repo,
+            baccarat_repository=baccarat_repo,
         )
         investors = InvestorService(
             users,
@@ -305,6 +317,22 @@ class ContainerFactory:
         )
         jackpot_worker = JackpotWorker(jackpots)
         tickets = TicketService(
+        baccarat = BaccaratService(
+            baccarat_repo,
+            users,
+            users_repo,
+            balances,
+            price,
+            validation,
+            math,
+            fair,
+            identifiers,
+            clock,
+            uow,
+            settings,
+            house_repo,
+        )
+        baccarat_worker = BaccaratWorker(baccarat)
             TicketRepository(mongo, mapper),
             guild_configs,
             identifiers,
@@ -349,6 +377,8 @@ class ContainerFactory:
             rains=rains,
             jackpots=jackpots,
             tickets=tickets,
+            baccarat=baccarat,
+            tickets=tickets,
             tips=tips,
             workers=workers,
             deposit_worker=deposit_worker,
@@ -356,6 +386,6 @@ class ContainerFactory:
             expiry_worker=expiry_worker,
             rain_worker=rain_worker,
             jackpot_worker=jackpot_worker,
-            house=house_repo,
+            baccarat_worker=baccarat_worker,
             fair=fair,
         )
