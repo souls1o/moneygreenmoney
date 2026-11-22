@@ -54,7 +54,6 @@ class CasinoBot(commands.Bot):
         self.tickets = TicketPresenter(self, container)
         container.deposits.set_listeners(
             on_credited=self.admin_alerts.on_player_deposit,
-            on_house_credited=self.admin_alerts.on_house_deposit,
         )
         container.withdrawals.set_listener(self.admin_alerts.on_withdrawal)
         self._errors = DiscordErrorPresenter()

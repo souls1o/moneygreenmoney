@@ -6,7 +6,7 @@ import discord
 
 from casino.container import AppContainer
 from casino.discord_bot.presentation.embeds import EmbedFactory
-from casino.domain.records import GameRecord, UserRecord
+from casino.domain.records import HOUSE_USER_ID, GameRecord, UserRecord
 from casino.logging.logger import get_logger
 from casino.solana_client.deposit_parser import ParsedIncomingTransfer
 from casino.utils.money import SolAmount
@@ -35,19 +35,11 @@ class AdminChannelPresenter:
         )
 
     async def on_house_deposit(self, parsed: ParsedIncomingTransfer, usd_price: Decimal) -> None:
-        amount_usd = self._container.math.sol_to_fiat(parsed.amount, usd_price)
-        await self._post(
-            "deposit_alerts_channel_id",
-            self._embeds.deposit_alert(
-                user_id=None,
-                amount=parsed.amount,
-                amount_usd=amount_usd,
-                signature=parsed.signature,
-                is_house=True,
-            ),
-        )
+        return
 
     async def on_withdrawal(self, user_id: str, amount: SolAmount, destination: str, signature: str) -> None:
+        if user_id == HOUSE_USER_ID:
+            return
         quote = await self._container.price.get_quote(allow_stale=True)
         amount_usd = self._container.math.sol_to_fiat(amount, quote.sol_price("USD"))
         await self._post(
