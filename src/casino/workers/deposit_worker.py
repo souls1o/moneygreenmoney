@@ -7,7 +7,11 @@ from solana.exceptions import SolanaRpcException
 
 from casino.logging.logger import get_logger
 from casino.repositories.cursor_repository import CursorRepository
-from casino.services.deposit_service import DepositService, DepositWatchTarget
+from casino.services.deposit_service import (
+    DepositService,
+    DepositTransactionPendingError,
+    DepositWatchTarget,
+)
 from casino.solana_client.rpc import SolanaRpcGateway, SolanaRpcUnavailableError
 from casino.utils.clock import Clock
 
@@ -77,22 +81,18 @@ class DepositMonitorWorker:
         cursor_name = deposit_cursor_name(target.address)
         cursor = await self._cursors.get(cursor_name)
         until = cursor.value if cursor else None
-        newest_first: list[str] = []
-        before: str | None = None
-        for _ in range(MAX_PAGES):
-            page = await self._rpc.get_signatures(
-                target.address, until=until, before=before, limit=PAGE_SIZE
-            )
-            if not page:
-                break
-            newest_first.extend(page)
-            if len(page) < PAGE_SIZE:
-                break
-            before = page[-1]
+        newest_first = await self._collect_signatures(target.address, until=until)
+        if until:
+            tip = await self._rpc.get_signatures(target.address, limit=PAGE_SIZE)
+            seen = set(newest_first)
+            newest_first = [signature for signature in tip if signature not in seen] + newest_first
+        caught_up = True
+        last_complete: str | None = None
         if newest_first:
             for signature in reversed(newest_first):
                 try:
                     credited = await self._deposits.ingest_signature(signature, target)
+                    last_complete = signature
                     if credited is not None:
                         self._logger.info(
                             "deposit_auto_credited",
@@ -100,9 +100,36 @@ class DepositMonitorWorker:
                             userId=credited.discord_id,
                             address=target.address,
                         )
+                except DepositTransactionPendingError:
+                    caught_up = False
+                    self._logger.info(
+                        "deposit_signature_pending",
+                        txSignature=signature,
+                        address=target.address,
+                    )
+                    break
                 except Exception:
+                    caught_up = False
                     self._logger.exception(
                         "deposit_signature_failed", txSignature=signature, address=target.address
                     )
-            await self._cursors.set(cursor_name, newest_first[0], self._clock.now())
-        await self._deposits.sweep_target(target)
+                    break
+            if last_complete is not None:
+                await self._cursors.set(cursor_name, last_complete, self._clock.now())
+        if caught_up:
+            await self._deposits.sweep_target(target)
+
+    async def _collect_signatures(self, address: str, *, until: str | None) -> list[str]:
+        newest_first: list[str] = []
+        before: str | None = None
+        for _ in range(MAX_PAGES):
+            page = await self._rpc.get_signatures(
+                address, until=until, before=before, limit=PAGE_SIZE
+            )
+            if not page:
+                break
+            newest_first.extend(page)
+            if len(page) < PAGE_SIZE:
+                break
+            before = page[-1]
+        return newest_first

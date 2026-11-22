@@ -26,3 +26,25 @@ class TestSolanaDepositParser:
         parser = SolanaDepositParser()
         payload = {"meta": {"err": {"InstructionError": [0, "Custom"]}, "preBalances": [1], "postBalances": [2]}}
         assert parser.parse(payload, destination="x", signature="s") is None
+
+    def test_parses_versioned_transfer_via_loaded_addresses(self) -> None:
+        parser = SolanaDepositParser()
+        destination = "Dest11111111111111111111111111111111111111"
+        payload = {
+            "meta": {
+                "err": None,
+                "preBalances": [5_000_000, 1_000_000],
+                "postBalances": [4_000_000, 2_000_000],
+                "loadedAddresses": {"writable": [destination], "readonly": []},
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": ["Sender111111111111111111111111111111111111"],
+                    "instructions": [],
+                }
+            },
+        }
+        parsed = parser.parse(payload, destination=destination, signature="sig")
+        assert parsed is not None
+        assert parsed.lamports == 1_000_000
+        assert parsed.destination == destination

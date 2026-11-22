@@ -37,9 +37,20 @@ class SolanaDepositParser:
         meta = payload.get("meta") or {}
         if meta.get("err"):
             return None
+        if not meta and isinstance(payload.get("transaction"), dict) and isinstance(
+            payload["transaction"].get("meta"), dict
+        ):
+            payload = payload["transaction"]
+            meta = payload.get("meta") or {}
+            if meta.get("err"):
+                return None
         transaction = payload.get("transaction") or {}
         message = transaction.get("message") or {}
         account_keys = self._account_keys(message.get("accountKeys") or [])
+        loaded = meta.get("loadedAddresses") or {}
+        if isinstance(loaded, dict):
+            account_keys.extend(self._account_keys(loaded.get("writable") or []))
+            account_keys.extend(self._account_keys(loaded.get("readonly") or []))
         try:
             dest_index = account_keys.index(destination)
         except ValueError:

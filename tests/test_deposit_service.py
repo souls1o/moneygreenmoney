@@ -6,7 +6,11 @@ from casino.domain.enums import LedgerEntryType
 from casino.domain.records import UserRecord
 from casino.errors import AlreadyProcessedError
 from casino.services.balance_service import BalanceService
-from casino.services.deposit_service import DepositService, DepositWatchTarget
+from casino.services.deposit_service import (
+    DepositService,
+    DepositTransactionPendingError,
+    DepositWatchTarget,
+)
 from casino.services.ledger_service import LedgerService
 from casino.services.user_service import UserService
 from casino.solana_client.deposit_parser import ParsedIncomingTransfer
@@ -146,6 +150,16 @@ async def test_house_credit_ignores_super_wallet_settlement() -> None:
         memo=None,
     )
     await service.credit_house(parsed)
+
+    async def get_parsed_transaction(_signature: str):
+        return {"ok": True}
+
+    class InternalParser:
+        def parse(self, _payload, *, destination: str, signature: str):
+            return parsed
+
+    service._rpc.get_parsed_transaction = get_parsed_transaction  # type: ignore[method-assign]
+    service._parser = InternalParser()  # type: ignore[assignment]
     credited = await service.ingest_signature(
         parsed.signature,
         DepositWatchTarget(address=rpc.house_address, is_house=True),
@@ -201,6 +215,24 @@ async def test_known_user_deposit_retries_sweep() -> None:
     )
     assert credited is None
     assert rpc.swept == ["player-1"]
+
+
+@pytest.mark.asyncio
+async def test_ingest_waits_when_transaction_is_missing() -> None:
+    service, users_repo, _house, _ledger, _rpc, clock = _service()
+    user = UserRecord(
+        discord_id="1",
+        deposit_memo="BBTEST",
+        deposit_address="Player111111111111111111111111111111111111",
+        created_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    users_repo.users["1"] = user
+    with pytest.raises(DepositTransactionPendingError):
+        await service.ingest_signature(
+            "sig-missing",
+            DepositWatchTarget(address=user.deposit_address or "", user_id="1"),
+        )
 
 
 @pytest.mark.asyncio

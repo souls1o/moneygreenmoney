@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from casino.services.deposit_service import DepositWatchTarget
+from casino.services.deposit_service import DepositTransactionPendingError, DepositWatchTarget
 from casino.solana_client.rpc import SolanaRpcUnavailableError
 from casino.workers.deposit_worker import DepositMonitorWorker
 from tests.conftest import FrozenClock
@@ -95,6 +95,32 @@ async def test_deposit_worker_skips_known_signatures_without_tx_fetch() -> None:
     assert parsed["n"] == 1
     cursors.set.assert_awaited()
     deposits.sync_house_wallet.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deposit_worker_does_not_skip_pending_transaction() -> None:
+    clock = FrozenClock()
+
+    async def ingest_signature(signature, target):
+        raise DepositTransactionPendingError(signature)
+
+    deposits = SimpleNamespace(
+        watch_targets=AsyncMock(return_value=[DepositWatchTarget(address="addr1", user_id="1")]),
+        ingest_signature=ingest_signature,
+        sync_house_wallet=AsyncMock(return_value=None),
+        sweep_target=AsyncMock(return_value=None),
+    )
+
+    async def get_signatures(*_args, **_kwargs):
+        return ["sig-new"]
+
+    rpc = SimpleNamespace(is_configured=True, get_signatures=get_signatures)
+    cursors = SimpleNamespace(get=AsyncMock(return_value=None), set=AsyncMock())
+    settings = SimpleNamespace(deposit_wallets_per_tick=4, deposit_rpc_gap_seconds=0)
+    worker = DepositMonitorWorker(deposits, rpc, cursors, clock, settings)  # type: ignore[arg-type]
+    await worker.tick()
+    cursors.set.assert_not_awaited()
+    deposits.sweep_target.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -8,13 +8,17 @@ from typing import Any
 from websockets.asyncio.client import connect as websocket_connect
 
 from casino.logging.logger import get_logger
-from casino.services.deposit_service import DepositService, DepositWatchTarget
+from casino.services.deposit_service import (
+    DepositService,
+    DepositTransactionPendingError,
+    DepositWatchTarget,
+)
 from casino.solana_client.logs_subscribe import LogNotification, logs_subscribe_params, parse_logs_notification
 
 # Helius free: 1,000 subscriptions per WebSocket connection.
 MAX_LOG_SUBSCRIPTIONS = 1_000
 SUBSCRIBE_REFRESH_SECONDS = 20.0
-INGEST_RETRIES = 4
+INGEST_RETRIES = 8
 
 
 class DepositStreamWorker:
@@ -66,6 +70,9 @@ class DepositStreamWorker:
             try:
                 await self._deposits.ingest_signature(notification.signature, target)
                 return
+            except DepositTransactionPendingError as exc:
+                last_error = exc
+                await asyncio.sleep(0.5 * (attempt + 1))
             except Exception as exc:
                 last_error = exc
                 await asyncio.sleep(0.25 * (attempt + 1))

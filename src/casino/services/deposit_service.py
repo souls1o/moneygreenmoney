@@ -6,6 +6,10 @@ from casino.db.unit_of_work import UnitOfWorkFactory
 from casino.domain.enums import LedgerEntryType, TransactionType
 from casino.domain.records import HOUSE_USER_ID, UserRecord
 from casino.errors import AlreadyProcessedError, DepositError, FeatureDisabledError
+
+
+class DepositTransactionPendingError(Exception):
+    """The signature is known but RPC has not returned the transaction body yet."""
 from casino.logging.logger import LogContext, get_logger
 from casino.repositories.transaction_repository import TransactionRepository
 from casino.services.balance_service import BalanceService
@@ -93,7 +97,7 @@ class DepositService:
         if existing is not None:
             await self.sweep_target(target)
             return None
-        parsed = await self._load_incoming(signature, target.address)
+        parsed = await self._incoming_or_pending(signature, target.address)
         if parsed is None:
             return None
         if self._is_internal_transfer(parsed):
@@ -242,14 +246,14 @@ class DepositService:
 
     async def parse_signature(self, signature: str, destination: str) -> ParsedIncomingTransfer | None:
         self.require_configured()
-        return await self._load_incoming(signature, destination)
-
-    async def _load_incoming(self, signature: str, destination: str) -> ParsedIncomingTransfer | None:
         payload = await self._rpc.get_parsed_transaction(signature)
         if payload is None:
             return None
-        return self._parser.parse(
-            payload,
-            destination=destination,
-            signature=signature,
-        )
+        return self._parser.parse(payload, destination=destination, signature=signature)
+
+    async def _incoming_or_pending(self, signature: str, destination: str) -> ParsedIncomingTransfer | None:
+        payload = await self._rpc.get_parsed_transaction(signature)
+        if payload is None:
+            self._logger.info("deposit_transaction_pending", txSignature=signature, address=destination)
+            raise DepositTransactionPendingError(signature)
+        return self._parser.parse(payload, destination=destination, signature=signature)

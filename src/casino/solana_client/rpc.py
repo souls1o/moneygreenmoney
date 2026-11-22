@@ -218,6 +218,7 @@ class SolanaRpcGateway:
             until=until_sig,
             before=before_sig,
             limit=limit,
+            commitment=self.commitment,
         )
         items = signature_entries(response)
         if items is None:
@@ -230,6 +231,7 @@ class SolanaRpcGateway:
         response = await self.client.get_transaction(
             Signature.from_string(signature),
             encoding="jsonParsed",
+            commitment=self.commitment,
             max_supported_transaction_version=0,
         )
         if response.value is None:
