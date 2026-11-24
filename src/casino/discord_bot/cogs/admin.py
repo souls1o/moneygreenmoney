@@ -10,6 +10,7 @@ from casino.discord_bot.presentation.config_view import build_admin_config
 from casino.discord_bot.presentation.embeds import EmbedFactory
 from casino.discord_bot.presentation.interactions import ack, send_panel
 from casino.domain.enums import GameType, GuildConfigSlot, UserRole
+from casino.domain.records import UserRecord
 from casino.logging.logger import LogContext
 from casino.utils.money import SolAmount
 
@@ -128,7 +129,30 @@ class AdminCog(commands.Cog):
                 treasury.sol_balance_lamports,
                 treasury.total_fees_collected_lamports,
             ),
-        )
+            )
+
+    @app_commands.command(name="check_balance", description="Check a member's casino balance")
+    @app_commands.describe(member="Member whose balance to inspect")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    async def check_balance(self, interaction: discord.Interaction, member: discord.Member) -> None:
+        await ack(interaction)
+        await self._guard(interaction)
+        with LogContext.bind(userId=str(member.id)):
+            user = await self._container.users.get(str(member.id))
+            quote = await self._container.price.get_quote(allow_stale=True)
+            registered = user is not None
+            if user is None:
+                user = UserRecord(discord_id=str(member.id), deposit_memo="")
+            panel = self._embeds.admin_player_balance(
+                user,
+                quote,
+                member=member.mention,
+                registered=registered,
+            )
+            await send_panel(interaction, panel)
+            panel.stop()
 
     @app_commands.command(name="housestats", description="Show house balance, super wallet, and timeframe stats")
     @app_commands.allowed_installs(guilds=True, users=False)

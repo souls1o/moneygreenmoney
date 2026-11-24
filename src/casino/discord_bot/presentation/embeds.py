@@ -119,6 +119,30 @@ class EmbedFactory:
             builder.field("USD", f"`{math.format_fiat_symbol(usd, 'USD')}`")
         return builder.build()
 
+    def admin_player_balance(
+        self,
+        user: UserRecord,
+        quote: PriceQuote,
+        *,
+        member: str,
+        registered: bool = True,
+    ) -> CasinoPanel:
+        math = self._container.math
+        currency = user.display_currency
+        sol = user.sol_balance
+        fiat = math.sol_to_fiat(sol, quote.sol_price(currency))
+        usd = math.sol_to_fiat(sol, quote.sol_price("USD"))
+        stale = " (price cache)" if quote.stale else ""
+        note = "" if registered else " This member has no casino account yet."
+        builder = (
+            self.builder("Player balance", description=f"{member}.{note}")
+            .field("SOL", f"`{math.format_sol(sol)} SOL`")
+            .field(currency, f"`{math.format_fiat_symbol(fiat, currency)}`{stale}")
+        )
+        if currency != "USD":
+            builder.field("USD", f"`{math.format_fiat_symbol(usd, 'USD')}`")
+        return builder.build()
+
     def deposits_unavailable(self) -> CasinoPanel:
         return self.builder(
             "Deposits unavailable",
