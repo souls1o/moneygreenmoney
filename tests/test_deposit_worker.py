@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -94,6 +95,8 @@ async def test_deposit_worker_skips_known_signatures_without_tx_fetch() -> None:
     await worker.tick()
     assert parsed["n"] == 1
     cursors.set.assert_awaited()
+    if worker._house_sync_task is not None:
+        await worker._house_sync_task
     deposits.sync_house_wallet.assert_awaited()
 
 
@@ -141,6 +144,8 @@ async def test_deposit_worker_sweeps_house_when_there_are_no_new_signatures() ->
     cursors = SimpleNamespace(get=AsyncMock(return_value=None), set=AsyncMock())
     worker = DepositMonitorWorker(deposits, rpc, cursors, clock)  # type: ignore[arg-type]
     await worker.tick()
+    if worker._house_sync_task is not None:
+        await worker._house_sync_task
     deposits.sync_house_wallet.assert_awaited_once()
     deposits.sweep_target.assert_awaited_once()
 

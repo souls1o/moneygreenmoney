@@ -44,6 +44,7 @@ class DepositMonitorWorker:
         self._wallets_per_tick = int(getattr(settings, "deposit_wallets_per_tick", 4) or 4)
         self._rpc_gap = float(getattr(settings, "deposit_rpc_gap_seconds", 0) or 0)
         self._logger = get_logger("casino.worker.deposits")
+        self._house_sync_task: asyncio.Task[None] | None = None
 
     async def tick(self) -> None:
         if not self._rpc.is_configured:
@@ -56,7 +57,7 @@ class DepositMonitorWorker:
                 if self._rpc_gap:
                     await asyncio.sleep(self._rpc_gap)
                 await self._tick_target(target)
-            await self._deposits.sync_house_wallet()
+            self._schedule_house_sync()
         except (SolanaRpcException, SolanaRpcUnavailableError, TypeError, AttributeError) as exc:
             self._cooldown_until = now + RPC_BACKOFF
             cause = getattr(exc, "__cause__", None)
@@ -118,6 +119,17 @@ class DepositMonitorWorker:
                 await self._cursors.set(cursor_name, last_complete, self._clock.now())
         if caught_up:
             await self._deposits.sweep_target(target)
+
+    def _schedule_house_sync(self) -> None:
+        if self._house_sync_task is not None and not self._house_sync_task.done():
+            return
+        self._house_sync_task = asyncio.create_task(self._run_house_sync())
+
+    async def _run_house_sync(self) -> None:
+        try:
+            await self._deposits.sync_house_wallet()
+        except Exception:
+            self._logger.exception("deposit_house_sync_failed")
 
     async def _collect_signatures(self, address: str, *, until: str | None) -> list[str]:
         newest_first: list[str] = []

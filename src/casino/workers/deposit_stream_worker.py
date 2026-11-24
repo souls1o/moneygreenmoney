@@ -17,8 +17,8 @@ from casino.solana_client.logs_subscribe import LogNotification, logs_subscribe_
 
 # Helius free: 1,000 subscriptions per WebSocket connection.
 MAX_LOG_SUBSCRIPTIONS = 1_000
-SUBSCRIBE_REFRESH_SECONDS = 20.0
-INGEST_RETRIES = 8
+SUBSCRIBE_REFRESH_SECONDS = 2.0
+INGEST_RETRY_DELAYS = (0.05, 0.08, 0.12, 0.18, 0.25, 0.35, 0.5, 0.75, 1.0)
 
 
 class DepositStreamWorker:
@@ -41,7 +41,11 @@ class DepositStreamWorker:
         self._jobs: set[asyncio.Task[None]] = set()
         self._req_id = 0
         self._ws = None
+        self._sync_requested = asyncio.Event()
         self._logger = get_logger("casino.worker.deposit_stream")
+
+    def request_sync(self) -> None:
+        self._sync_requested.set()
 
     async def run(self) -> None:
         delay = 1.0
@@ -66,21 +70,22 @@ class DepositStreamWorker:
         if target is None:
             return
         last_error: Exception | None = None
-        for attempt in range(INGEST_RETRIES):
+        for attempt, delay in enumerate(INGEST_RETRY_DELAYS, start=1):
             try:
                 await self._deposits.ingest_signature(notification.signature, target)
                 return
             except DepositTransactionPendingError as exc:
                 last_error = exc
-                await asyncio.sleep(0.5 * (attempt + 1))
+                await asyncio.sleep(delay)
             except Exception as exc:
                 last_error = exc
-                await asyncio.sleep(0.25 * (attempt + 1))
+                await asyncio.sleep(min(delay, 0.25))
         if last_error is not None:
-            self._logger.exception(
+            self._logger.warning(
                 "deposit_stream_ingest_failed",
                 txSignature=notification.signature,
                 address=address,
+                error=str(last_error),
             )
 
     async def _run_session(self) -> None:
@@ -134,7 +139,11 @@ class DepositStreamWorker:
 
     async def _sync_loop(self) -> None:
         while True:
-            await asyncio.sleep(SUBSCRIBE_REFRESH_SECONDS)
+            try:
+                await asyncio.wait_for(self._sync_requested.wait(), timeout=SUBSCRIBE_REFRESH_SECONDS)
+            except TimeoutError:
+                pass
+            self._sync_requested.clear()
             await self._sync_subscriptions()
 
     async def _sync_subscriptions(self) -> None:
@@ -159,8 +168,7 @@ class DepositStreamWorker:
             )
 
     async def _subscribe(self, address: str) -> None:
-        commitment = str(getattr(self._settings, "solana_commitment", "confirmed") or "confirmed")
-        result = await self._rpc("logsSubscribe", logs_subscribe_params(address, commitment.lower()))
+        result = await self._rpc("logsSubscribe", logs_subscribe_params(address, "processed"))
         sub_id = int(result)
         self._sub_by_address[address] = sub_id
         self._address_by_sub[sub_id] = address

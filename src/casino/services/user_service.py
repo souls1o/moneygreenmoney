@@ -28,6 +28,16 @@ class UserService:
         self._deposit_wallets = deposit_wallets
         self._rng = rng or ProvablyFairService()
         self._logger = get_logger("casino.user")
+        self._on_deposit_wallet: object | None = None
+
+    def set_on_deposit_wallet(self, callback) -> None:
+        self._on_deposit_wallet = callback
+
+    def _notify_deposit_wallet(self) -> None:
+        callback = self._on_deposit_wallet
+        if callback is None:
+            return
+        callback()
 
     async def get(self, discord_id: str) -> UserRecord | None:
         return await self._users.find_by_discord_id(discord_id)
@@ -58,6 +68,8 @@ class UserService:
         try:
             await self._users.insert(user)
             self._logger.info("user_created", userId=discord_id, depositAddress=user.deposit_address)
+            if user.deposit_address:
+                self._notify_deposit_wallet()
             return await self.ensure_fairness(discord_id)
         except Exception:
             raced = await self._users.find_by_discord_id(discord_id)
@@ -76,6 +88,7 @@ class UserService:
             return user
         address = self._deposit_wallets.address_for(user.discord_id)
         updated = await self._users.set_deposit_address(user.discord_id, address, self._clock.now())
+        self._notify_deposit_wallet()
         return updated or user
 
     async def set_currency(self, discord_id: str, currency: str) -> UserRecord:

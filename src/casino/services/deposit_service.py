@@ -1,15 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+
+from solana.rpc.commitment import Confirmed, Processed
 
 from casino.db.unit_of_work import UnitOfWorkFactory
 from casino.domain.enums import LedgerEntryType, TransactionType
 from casino.domain.records import HOUSE_USER_ID, UserRecord
 from casino.errors import AlreadyProcessedError, DepositError, FeatureDisabledError
-
-
-class DepositTransactionPendingError(Exception):
-    """The signature is known but RPC has not returned the transaction body yet."""
 from casino.logging.logger import LogContext, get_logger
 from casino.repositories.transaction_repository import TransactionRepository
 from casino.services.balance_service import BalanceService
@@ -20,6 +19,10 @@ from casino.services.user_service import UserService
 from casino.solana_client.deposit_parser import ParsedIncomingTransfer, SolanaDepositParser
 from casino.solana_client.rpc import SolanaRpcGateway
 from casino.utils.text import TextNormalizer
+
+
+class DepositTransactionPendingError(Exception):
+    """The signature is known but RPC has not returned the transaction body yet."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +63,7 @@ class DepositService:
         self._on_credited = None
         self._on_house_credited = None
         self._logger = get_logger("casino.deposit")
+        self._sweep_tasks: set[asyncio.Task[None]] = set()
 
     def set_listeners(self, *, on_credited=None, on_house_credited=None) -> None:
         self._on_credited = on_credited
@@ -95,7 +99,7 @@ class DepositService:
     async def ingest_signature(self, signature: str, target: DepositWatchTarget) -> UserRecord | None:
         existing = await self._transactions.find_by_signature(signature)
         if existing is not None:
-            await self.sweep_target(target)
+            self._schedule_sweep(target)
             return None
         parsed = await self._incoming_or_pending(signature, target.address)
         if parsed is None:
@@ -124,7 +128,7 @@ class DepositService:
             credited = await self.credit_parsed(user, parsed)
         except AlreadyProcessedError:
             credited = user
-        await self.sweep_user(user.discord_id)
+        self._schedule_sweep(target)
         return credited
 
     async def credit_parsed(self, user: UserRecord, parsed: ParsedIncomingTransfer) -> UserRecord:
@@ -162,10 +166,11 @@ class DepositService:
                 ledgerId=mutation.ledger_entry.entry_id,
             )
             if self._on_credited is not None:
-                try:
-                    await self._on_credited(mutation.user, parsed, usd_price)
-                except Exception:
-                    self._logger.exception("deposit_alert_failed", txSignature=parsed.signature)
+                self._spawn(
+                    self._notify_credited(mutation.user, parsed, usd_price),
+                    "deposit_alert_failed",
+                    parsed.signature,
+                )
             return mutation.user
 
     async def credit_house(self, parsed: ParsedIncomingTransfer) -> None:
@@ -215,10 +220,11 @@ class DepositService:
                 destination=parsed.destination,
             )
             if self._on_house_credited is not None:
-                try:
-                    await self._on_house_credited(parsed, usd_price)
-                except Exception:
-                    self._logger.exception("house_deposit_alert_failed", txSignature=parsed.signature)
+                self._spawn(
+                    self._notify_house_credited(parsed, usd_price),
+                    "house_deposit_alert_failed",
+                    parsed.signature,
+                )
 
     async def sweep_user(self, discord_id: str) -> str | None:
         return await self._rpc.collect_user_into_super(discord_id)
@@ -246,14 +252,51 @@ class DepositService:
 
     async def parse_signature(self, signature: str, destination: str) -> ParsedIncomingTransfer | None:
         self.require_configured()
-        payload = await self._rpc.get_parsed_transaction(signature)
+        payload = await self._fetch_parsed_transaction(signature)
         if payload is None:
             return None
         return self._parser.parse(payload, destination=destination, signature=signature)
 
     async def _incoming_or_pending(self, signature: str, destination: str) -> ParsedIncomingTransfer | None:
-        payload = await self._rpc.get_parsed_transaction(signature)
+        payload = await self._fetch_parsed_transaction(signature)
         if payload is None:
             self._logger.info("deposit_transaction_pending", txSignature=signature, address=destination)
             raise DepositTransactionPendingError(signature)
         return self._parser.parse(payload, destination=destination, signature=signature)
+
+    async def _fetch_parsed_transaction(self, signature: str) -> dict | None:
+        payload = await self._rpc_parsed_transaction(signature, Processed)
+        if payload is not None:
+            return payload
+        return await self._rpc_parsed_transaction(signature, Confirmed)
+
+    async def _rpc_parsed_transaction(self, signature: str, commitment) -> dict | None:
+        try:
+            return await self._rpc.get_parsed_transaction(signature, commitment=commitment)
+        except TypeError:
+            return await self._rpc.get_parsed_transaction(signature)
+
+    def _schedule_sweep(self, target: DepositWatchTarget) -> None:
+        self._spawn(self._safe_sweep(target), "deposit_sweep_failed", target.address)
+
+    async def _safe_sweep(self, target: DepositWatchTarget) -> None:
+        await self.sweep_target(target)
+
+    def _spawn(self, coro, log_event: str, detail: str) -> None:
+        task = asyncio.create_task(self._run_background(coro, log_event, detail))
+        self._sweep_tasks.add(task)
+        task.add_done_callback(self._sweep_tasks.discard)
+
+    async def _run_background(self, coro, log_event: str, detail: str) -> None:
+        try:
+            await coro
+        except Exception:
+            self._logger.exception(log_event, detail=detail)
+
+    async def _notify_credited(self, user: UserRecord, parsed: ParsedIncomingTransfer, usd_price) -> None:
+        assert self._on_credited is not None
+        await self._on_credited(user, parsed, usd_price)
+
+    async def _notify_house_credited(self, parsed: ParsedIncomingTransfer, usd_price) -> None:
+        assert self._on_house_credited is not None
+        await self._on_house_credited(parsed, usd_price)

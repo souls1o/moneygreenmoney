@@ -302,6 +302,7 @@ class ContainerFactory:
         workers = WorkerScheduler(lock_service)
         deposit_worker = DepositMonitorWorker(deposits, solana, cursor_repo, clock, settings)
         deposit_stream_worker = DepositStreamWorker(deposits, settings)
+        users.set_on_deposit_wallet(deposit_stream_worker.request_sync)
         expiry_worker = GameExpiryWorker(games)
         rains_repo = RainRepository(mongo, mapper)
         rains = RainService(

@@ -249,11 +249,17 @@ class SolanaRpcGateway:
             )
         return [str(getattr(item, "signature", item)) for item in items]
 
-    async def get_parsed_transaction(self, signature: str) -> dict[str, Any] | None:
+    async def get_parsed_transaction(
+        self,
+        signature: str,
+        *,
+        commitment: Commitment | None = None,
+    ) -> dict[str, Any] | None:
+        used = commitment or self.commitment
         response = await self.client.get_transaction(
             Signature.from_string(signature),
             encoding="jsonParsed",
-            commitment=self.commitment,
+            commitment=used,
             max_supported_transaction_version=0,
         )
         if response.value is None:

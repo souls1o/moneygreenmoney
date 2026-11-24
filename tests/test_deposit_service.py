@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from casino.domain.enums import LedgerEntryType
@@ -214,6 +216,7 @@ async def test_known_user_deposit_retries_sweep() -> None:
         DepositWatchTarget(address=user.deposit_address or "", user_id="1"),
     )
     assert credited is None
+    await asyncio.gather(*list(service._sweep_tasks), return_exceptions=True)
     assert rpc.swept == ["player-1"]
 
 
@@ -260,4 +263,5 @@ async def test_deposit_notifies_credit_listener() -> None:
         memo=None,
     )
     await service.credit_parsed(user, parsed)
+    await asyncio.gather(*list(service._sweep_tasks), return_exceptions=True)
     assert seen == [("1", "sig-listen")]
