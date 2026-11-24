@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 
 import pytest
@@ -71,6 +72,36 @@ async def test_sync_house_wallet_aligns_to_book() -> None:
     signature = await custody.sync_house_wallet()
     assert signature == "align-sig"
     assert rpc.aligned == [3_000_000_000]
+
+
+@pytest.mark.asyncio
+async def test_schedule_house_wallet_sync_coalesces_overlapping_aligns() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class AlignRpc:
+        is_configured = True
+        has_house_wallet = True
+        calls = 0
+
+        async def align_house_to_book(self, book_lamports: int) -> str | None:
+            self.calls += 1
+            started.set()
+            await release.wait()
+            return "align-sig"
+
+    rpc = AlignRpc()
+    house = MemoryHouseRepository()
+    house.record.sol_balance_lamports = 3_000_000_000
+    custody = CustodyService(rpc, house)  # type: ignore[arg-type]
+    custody.schedule_house_wallet_sync()
+    await started.wait()
+    custody.schedule_house_wallet_sync()
+    custody.schedule_house_wallet_sync()
+    release.set()
+    assert custody._sync_task is not None
+    await custody._sync_task
+    assert rpc.calls == 2
 
 
 @pytest.mark.asyncio

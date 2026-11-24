@@ -7,6 +7,7 @@ from discord.ext import commands
 from casino.container import AppContainer
 from casino.discord_bot.presentation.embeds import EmbedFactory
 from casino.discord_bot.presentation.errors import DiscordErrorPresenter
+from casino.discord_bot.presentation.interactions import ack, send_panel
 from casino.logging.logger import LogContext
 
 
@@ -21,23 +22,25 @@ class BalanceCog(commands.Cog):
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def balance(self, interaction: discord.Interaction) -> None:
+        await ack(interaction)
         await self._container.rate_limits.enforce(f"balance:{interaction.user.id}")
         with LogContext.bind(userId=str(interaction.user.id)):
             user = await self._container.users.get_or_create(str(interaction.user.id))
             quote = await self._container.price.get_quote(allow_stale=True)
             panel = self._embeds.balance(user, quote)
-            await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+            await send_panel(interaction, panel, ephemeral=True)
             panel.stop()
 
     @app_commands.command(name="housebal", description="Show how much SOL is in the house book")
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def housebal(self, interaction: discord.Interaction) -> None:
+        await ack(interaction)
         await self._container.rate_limits.enforce(f"housebal:{interaction.user.id}")
         treasury = await self._container.admin.house_treasury()
         quote = await self._container.price.get_quote(allow_stale=True)
         panel = self._embeds.house_balance(treasury.sol_balance_lamports, quote)
-        await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+        await send_panel(interaction, panel, ephemeral=True)
         panel.stop()
 
     @app_commands.command(name="tip", description="Send SOL from your balance to another player")
@@ -48,13 +51,11 @@ class BalanceCog(commands.Cog):
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def tip(self, interaction: discord.Interaction, member: discord.Member, amount: str) -> None:
+        await ack(interaction)
         await self._container.rate_limits.enforce(f"tip:{interaction.user.id}")
         if member.bot:
-            await interaction.response.send_message(
-                **self._embeds.error("You can only tip players.").send_kwargs(ephemeral=True)
-            )
+            await send_panel(interaction, self._embeds.error("You can only tip players."), ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True)
         with LogContext.bind(userId=str(interaction.user.id)):
             try:
                 fiat = self._container.validation.parse_fiat_amount(amount)

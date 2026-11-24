@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
-from typing import Any
+from typing import Any, Literal
 
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Commitment, Confirmed, Finalized, Processed
@@ -50,6 +51,27 @@ def house_align_transfer(
 
 class SolanaRpcUnavailableError(RuntimeError):
     """RPC returned a rate-limit, HTML, or otherwise unusable payload."""
+
+
+class SolanaTransferUnconfirmedError(RuntimeError):
+    """The transaction was submitted but RPC did not confirm success or failure."""
+
+    def __init__(self, signature: str, message: str | None = None) -> None:
+        self.signature = signature
+        super().__init__(message or f"Solana transfer {signature} was submitted but not confirmed.")
+
+
+def _rpc_error_may_have_submitted(exc: BaseException) -> bool:
+    detail = str(exc).lower()
+    if not detail:
+        return True
+    if "simulation failed" in detail or "preflight" in detail:
+        return False
+    if "insufficient lamports" in detail or "insufficient funds" in detail:
+        return False
+    if "blockhash not found" in detail and "send" in detail:
+        return False
+    return True
 
 
 def signature_entries(response: object) -> list[Any] | None:
@@ -254,25 +276,68 @@ class SolanaRpcGateway:
         skip_preflight: bool = True,
         confirm: bool = False,
     ) -> str:
+        signatures = getattr(transaction, "signatures", None) or []
+        signature = str(signatures[0]) if signatures else ""
         opts = TxOpts(skip_preflight=skip_preflight, skip_confirmation=True, max_retries=3)
-        response = await self.client.send_transaction(transaction, opts=opts)
-        signature = str(response.value)
+        try:
+            response = await self.client.send_transaction(transaction, opts=opts)
+            signature = str(response.value) or signature
+        except Exception as exc:
+            if signature and _rpc_error_may_have_submitted(exc):
+                outcome = await self.wait_for_signature(signature)
+                if outcome == "ok":
+                    return signature
+                if outcome == "failed":
+                    raise
+            raise
         if confirm:
             await self.confirm_signature(signature)
         return signature
 
     async def confirm_signature(self, signature: str) -> None:
-        sig = Signature.from_string(signature)
-        response = await self.client.confirm_transaction(sig, commitment=Confirmed)
-        statuses = getattr(response, "value", None) or []
-        status = statuses[0] if statuses else None
-        if status is None:
-            parsed = await self.get_parsed_transaction(signature)
-            if parsed is None:
-                raise RuntimeError("The Solana transaction was not confirmed.")
+        outcome = await self.wait_for_signature(signature)
+        if outcome == "ok":
             return
-        if getattr(status, "err", None):
-            raise RuntimeError(f"The Solana transaction failed: {status.err}")
+        if outcome == "failed":
+            raise RuntimeError(f"The Solana transaction failed: {signature}")
+        raise SolanaTransferUnconfirmedError(signature)
+
+    async def wait_for_signature(
+        self,
+        signature: str,
+        *,
+        attempts: int = 24,
+        delay: float = 0.5,
+    ) -> Literal["ok", "failed"] | None:
+        sig = Signature.from_string(signature)
+        for _ in range(attempts):
+            try:
+                response = await self.client.get_signature_statuses([sig])
+                statuses = getattr(response, "value", None) or []
+                status = statuses[0] if statuses else None
+                if status is not None:
+                    if getattr(status, "err", None):
+                        return "failed"
+                    confirmation = str(getattr(status, "confirmation_status", "") or "").lower()
+                    if "confirmed" in confirmation or "finalized" in confirmation:
+                        return "ok"
+            except Exception:
+                pass
+            try:
+                parsed = await self.get_parsed_transaction(signature)
+            except Exception:
+                parsed = None
+            if parsed is not None:
+                meta = parsed.get("meta") if isinstance(parsed, dict) else None
+                if isinstance(meta, dict) and meta.get("err"):
+                    return "failed"
+                nested = parsed.get("transaction") if isinstance(parsed, dict) else None
+                nested_meta = nested.get("meta") if isinstance(nested, dict) else None
+                if isinstance(nested_meta, dict) and nested_meta.get("err"):
+                    return "failed"
+                return "ok"
+            await asyncio.sleep(delay)
+        return None
 
     async def collect_house_into_super(self) -> str | None:
         """House book SOL stays on the house wallet. Use align_house_to_book instead."""
@@ -391,31 +456,62 @@ class SolanaRpcGateway:
             raise ValueError("Cannot transfer to the same wallet.")
         last_error: Exception | None = None
         for attempt in range(3):
+            transaction = self._transfers.build(
+                payer=source,
+                recent_blockhash=await self.get_latest_blockhash(),
+                legs=[TransferLeg(destination=dest, amount=amount)],
+            )
+            signatures = getattr(transaction, "signatures", None) or []
+            signature = str(signatures[0]) if signatures else ""
+            submitted = False
             try:
-                transaction = self._transfers.build(
-                    payer=source,
-                    recent_blockhash=await self.get_latest_blockhash(),
-                    legs=[TransferLeg(destination=dest, amount=amount)],
-                )
                 signature = await self.send_transaction(
-                    transaction, skip_preflight=False, confirm=True
+                    transaction, skip_preflight=False, confirm=False
                 )
-                self._logger.info(
-                    label,
-                    destination=destination,
-                    source=str(source.pubkey()),
-                    amountLamports=amount.lamports,
+                submitted = True
+            except SolanaTransferUnconfirmedError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                self._logger.warning(
+                    "signed_transfer_submit_error",
+                    label=label,
+                    attempt=attempt + 1,
+                    txSignature=signature or None,
+                    error=str(exc),
+                )
+                if not _rpc_error_may_have_submitted(exc):
+                    break
+                if not submitted and not signature:
+                    continue
+            try:
+                await self.confirm_signature(signature)
+            except SolanaTransferUnconfirmedError:
+                self._logger.warning(
+                    "signed_transfer_unconfirmed",
+                    label=label,
                     txSignature=signature,
                     attempt=attempt + 1,
                 )
-                return signature
+                raise
             except Exception as exc:
                 last_error = exc
                 self._logger.warning(
                     "signed_transfer_retry",
                     label=label,
                     attempt=attempt + 1,
+                    txSignature=signature,
                     error=str(exc),
                 )
+                continue
+            self._logger.info(
+                label,
+                destination=destination,
+                source=str(source.pubkey()),
+                amountLamports=amount.lamports,
+                txSignature=signature,
+                attempt=attempt + 1,
+            )
+            return signature
         assert last_error is not None
         raise last_error

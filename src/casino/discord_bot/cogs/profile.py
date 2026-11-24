@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from casino.container import AppContainer
 from casino.discord_bot.presentation.embeds import EmbedFactory
+from casino.discord_bot.presentation.interactions import ack, send_panel
 from casino.logging.logger import LogContext
 
 
@@ -18,11 +19,12 @@ class ProfileCog(commands.Cog):
     @app_commands.command(name="profile", description="View casino stats and game history")
     @app_commands.describe(member="Another player to inspect")
     async def profile(self, interaction: discord.Interaction, member: discord.Member | None = None) -> None:
+        await ack(interaction, ephemeral=False)
         target = member or interaction.user
         await self._container.rate_limits.enforce(f"profile:{interaction.user.id}")
         with LogContext.bind(userId=str(target.id)):
             user = await self._container.users.get_or_create(str(target.id))
             stats = await self._container.games.profile_stats(str(target.id))
             panel = self._embeds.profile(target, user, stats)
-            await interaction.response.send_message(**panel.send_kwargs())
+            await send_panel(interaction, panel, ephemeral=False)
             panel.stop()

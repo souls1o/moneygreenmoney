@@ -7,6 +7,7 @@ import pytest
 
 from casino.domain.enums import (
     GameStatus,
+    GameType,
     LedgerEntryType,
     RainStatus,
     TransactionStatus,
@@ -87,7 +88,15 @@ class RainHarness:
         self.users_repo.users[discord_id] = user
         return user
 
-    def seed_wager(self, discord_id: str, lamports: int, *, hours_ago: float = 0) -> None:
+    def seed_wager(
+        self,
+        discord_id: str,
+        lamports: int,
+        *,
+        hours_ago: float = 0,
+        game_type: GameType = GameType.COINFLIP,
+        limbo_target: Decimal | None = None,
+    ) -> None:
         resolved = self.clock.now() - timedelta(hours=hours_ago)
         game_id = f"wager_{discord_id}_{len(self.games_repo.games)}"
         self.games_repo.games[game_id] = GameRecord(
@@ -99,6 +108,8 @@ class RainHarness:
             bet_amount_fiat=Decimal("5"),
             heads_ids=[discord_id],
             player_wager_lamports={discord_id: lamports},
+            game_type=game_type,
+            limbo_target=limbo_target,
             created_at=resolved,
             resolved_at=resolved,
         )
@@ -318,7 +329,7 @@ class TestRainService:
         assert harness.balance("p1") == harness.balance("p2")
 
     @pytest.mark.asyncio
-    async def test_join_requires_ten_percent_wagered_in_last_day(self, harness: RainHarness) -> None:
+    async def test_join_requires_ten_percent_wagered_since_rain_started(self, harness: RainHarness) -> None:
         harness.seed_user("creator")
         harness.seed_user("p1")
         rain = await harness.service.create_rain(
@@ -337,11 +348,12 @@ class TestRainService:
         assert joined.has_joined("p1")
 
     @pytest.mark.asyncio
-    async def test_join_rejects_wager_older_than_24_hours(self, harness: RainHarness) -> None:
+    async def test_join_rejects_wager_from_before_rain_started(self, harness: RainHarness) -> None:
         harness.seed_user("creator")
         harness.seed_user("p1")
-        harness.seed_wager("p1", 50_000_000, hours_ago=24.01)
+        harness.seed_wager("p1", 50_000_000)
         harness.seed_deposit("p1", 50_000_000)
+        harness.clock.advance(1)
         rain = await harness.service.create_rain(
             creator_id="creator",
             fiat_amount=Decimal("50"),
@@ -351,7 +363,7 @@ class TestRainService:
             await harness.join(rain.rain_id, "p1")
 
     @pytest.mark.asyncio
-    async def test_join_requires_ten_percent_deposited_in_last_day(self, harness: RainHarness) -> None:
+    async def test_join_requires_ten_percent_deposited_since_rain_started(self, harness: RainHarness) -> None:
         harness.seed_user("creator")
         harness.seed_user("p1")
         harness.seed_wager("p1", 50_000_000)
@@ -370,16 +382,17 @@ class TestRainService:
         assert joined.has_joined("p1")
 
     @pytest.mark.asyncio
-    async def test_join_rejects_deposit_older_than_24_hours(self, harness: RainHarness) -> None:
+    async def test_join_rejects_deposit_from_before_rain_started(self, harness: RainHarness) -> None:
         harness.seed_user("creator")
         harness.seed_user("p1")
-        harness.seed_wager("p1", 50_000_000)
-        harness.seed_deposit("p1", 50_000_000, hours_ago=24.01)
+        harness.seed_deposit("p1", 50_000_000)
+        harness.clock.advance(1)
         rain = await harness.service.create_rain(
             creator_id="creator",
             fiat_amount=Decimal("50"),
             duration_seconds=30,
         )
+        harness.seed_wager("p1", 50_000_000)
         with pytest.raises(RainError, match="deposited at least"):
             await harness.join(rain.rain_id, "p1")
 
@@ -423,6 +436,51 @@ class TestRainService:
             rain.rain_id, "p1", custom_statuses=(RAIN_JOIN_STATUS,)
         )
         assert ready.requirements_met() is True
+
+    @pytest.mark.asyncio
+    async def test_admin_rain_uses_custom_usd_requirements(self, harness: RainHarness) -> None:
+        harness.seed_user("admin")
+        harness.seed_user("p1")
+        rain = await harness.service.create_rain(
+            creator_id="admin",
+            fiat_amount=Decimal("50"),
+            duration_seconds=30,
+            guild_id="1",
+            waive_minimum=True,
+            wager_requirement_usd=Decimal("10"),
+            deposit_requirement_usd=Decimal("1"),
+        )
+        assert rain.wager_required_fiat == Decimal("10.00")
+        assert rain.deposit_required_fiat == Decimal("1.00")
+        harness.seed_wager("p1", 50_000_000)
+        harness.seed_deposit("p1", 10_000_000)
+        with pytest.raises(RainError, match="wagered at least"):
+            await harness.join(rain.rain_id, "p1")
+        harness.seed_wager("p1", 50_000_000)
+        joined = await harness.join(rain.rain_id, "p1")
+        assert joined.has_joined("p1")
+
+    @pytest.mark.asyncio
+    async def test_limbo_low_multiplier_does_not_fully_count(self, harness: RainHarness) -> None:
+        harness.seed_user("creator")
+        harness.seed_user("p1")
+        rain = await harness.service.create_rain(
+            creator_id="creator",
+            fiat_amount=Decimal("50"),
+            duration_seconds=30,
+        )
+        harness.seed_wager(
+            "p1",
+            50_000_000,
+            game_type=GameType.LIMBO,
+            limbo_target=Decimal("1.01"),
+        )
+        harness.seed_deposit("p1", 50_000_000)
+        with pytest.raises(RainError, match="wagered at least"):
+            await harness.join(rain.rain_id, "p1")
+        harness.seed_wager("p1", 50_000_000)
+        joined = await harness.join(rain.rain_id, "p1")
+        assert joined.has_joined("p1")
 
 
 def test_rain_join_status_matches_custom_activity() -> None:
@@ -468,7 +526,8 @@ def test_rain_join_gate_marks_completed_and_missing() -> None:
     factory = EmbedFactory(_EmbedContainer())  # type: ignore[arg-type]
     missing = RainJoinEligibility(
         currency="USD",
-        required_fiat=Decimal("5"),
+        wager_required_fiat=Decimal("5"),
+        deposit_required_fiat=Decimal("5"),
         wagered_fiat=Decimal("5"),
         deposited_fiat=Decimal("1"),
         wager_ok=True,
@@ -487,7 +546,8 @@ def test_rain_join_gate_marks_completed_and_missing() -> None:
     assert "casinounderground" in text
     ready = RainJoinEligibility(
         currency="USD",
-        required_fiat=Decimal("5"),
+        wager_required_fiat=Decimal("5"),
+        deposit_required_fiat=Decimal("5"),
         wagered_fiat=Decimal("5"),
         deposited_fiat=Decimal("5"),
         wager_ok=True,

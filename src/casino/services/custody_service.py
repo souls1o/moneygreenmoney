@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextvars import ContextVar
 from types import TracebackType
 
@@ -34,6 +35,8 @@ class CustodyService:
         self._rpc = rpc
         self._house = house_repository
         self._logger = get_logger("casino.custody")
+        self._sync_task: asyncio.Task[None] | None = None
+        self._sync_again = False
 
     def is_live(self) -> bool:
         return self._rpc is not None and self._rpc.is_configured
@@ -45,6 +48,24 @@ class CustodyService:
             return None
         book = (await self._house.get()).sol_balance_lamports
         return await self._rpc.align_house_to_book(book)
+
+    def schedule_house_wallet_sync(self) -> None:
+        self._sync_again = True
+        if self._sync_task is None or self._sync_task.done():
+            self._sync_task = asyncio.create_task(self._drain_house_wallet_sync())
+
+    async def _drain_house_wallet_sync(self) -> None:
+        try:
+            while self._sync_again:
+                self._sync_again = False
+                try:
+                    await self.sync_house_wallet()
+                except Exception:
+                    self._logger.exception("house_wallet_sync_failed")
+        finally:
+            self._sync_task = None
+            if self._sync_again:
+                self.schedule_house_wallet_sync()
 
     async def settle_player_pnl(self, discord_id: str, profit_lamports: int) -> None:
         if not self.is_live() or profit_lamports == 0 or is_house_seat(discord_id):
@@ -160,6 +181,6 @@ class HouseWalletSyncingUnitOfWork:
     ) -> None:
         await self._inner.__aexit__(exc_type, exc, tb)
         if exc_type is None and consume_house_wallet_dirty():
-            await self._custody.sync_house_wallet()
+            self._custody.schedule_house_wallet_sync()
         else:
             _house_wallet_dirty.set(False)

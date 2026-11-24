@@ -7,6 +7,7 @@ from discord.ext import commands
 from casino.container import AppContainer
 from casino.discord_bot.presentation.embeds import EmbedFactory
 from casino.discord_bot.presentation.errors import DiscordErrorPresenter
+from casino.discord_bot.presentation.interactions import ack, send_panel
 from casino.discord_bot.presentation.invest_view import build_invest_panel, require_investor_role
 from casino.logging.logger import LogContext
 
@@ -22,6 +23,7 @@ class InvestCog(commands.Cog):
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def invest(self, interaction: discord.Interaction) -> None:
+        await ack(interaction)
         await self._container.rate_limits.enforce(f"invest:{interaction.user.id}")
         with LogContext.bind(userId=str(interaction.user.id)):
             await require_investor_role(interaction, self._container)
@@ -37,4 +39,4 @@ class InvestCog(commands.Cog):
                 position,
                 quote,
             )
-            await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+            await send_panel(interaction, panel, ephemeral=True)

@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from casino.config.settings import Settings
 from casino.db.unit_of_work import UnitOfWorkFactory
-from casino.domain.enums import JackpotStatus, LedgerEntryType, TransactionType
+from casino.domain.enums import GameType, JackpotStatus, LedgerEntryType, TransactionType
 from casino.domain.jackpot import (
     JACKPOT_REVEAL_SECONDS,
     JACKPOT_SECONDS,
@@ -41,6 +41,7 @@ class JackpotService:
         unit_of_work: UnitOfWorkFactory,
         settings: Settings,
         house_repository,
+        wager_races=None,
     ) -> None:
         self._jackpots = jackpot_repository
         self._users = user_service
@@ -55,6 +56,7 @@ class JackpotService:
         self._uow = unit_of_work
         self._settings = settings
         self._house = house_repository
+        self._wager_races = wager_races
         self._logger = get_logger("casino.jackpot")
 
     async def get(self, jackpot_id: str) -> JackpotRecord:
@@ -338,3 +340,14 @@ class JackpotService:
                 now=now,
                 session=session,
             )
+            if self._wager_races is not None and jackpot.guild_id:
+                try:
+                    await self._wager_races.record_wager(
+                        jackpot.guild_id,
+                        player_id,
+                        wager.lamports,
+                        game_type=GameType.JACKPOT,
+                        session=session,
+                    )
+                except Exception:
+                    self._logger.exception("wager_race_record_failed", userId=player_id, jackpotId=jackpot.jackpot_id)

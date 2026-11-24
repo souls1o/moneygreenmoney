@@ -7,6 +7,7 @@ from discord.ext import commands
 from casino.container import AppContainer
 from casino.discord_bot.presentation.embeds import EmbedFactory
 from casino.discord_bot.presentation.errors import DiscordErrorPresenter
+from casino.discord_bot.presentation.interactions import ack, send_panel
 from casino.discord_bot.presentation.settings_view import build_settings_panel
 from casino.logging.logger import LogContext
 
@@ -22,6 +23,7 @@ class SettingsCog(commands.Cog):
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def settings(self, interaction: discord.Interaction) -> None:
+        await ack(interaction)
         await self._container.rate_limits.enforce(f"settings:{interaction.user.id}")
         with LogContext.bind(userId=str(interaction.user.id)):
             user = await self._container.users.ensure_fairness(str(interaction.user.id))
@@ -33,4 +35,4 @@ class SettingsCog(commands.Cog):
                 user,
                 currencies,
             )
-            await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+            await send_panel(interaction, panel, ephemeral=True)

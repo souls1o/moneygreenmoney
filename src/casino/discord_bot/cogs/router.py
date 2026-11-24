@@ -7,6 +7,7 @@ from casino.container import AppContainer
 from casino.discord_bot.presentation.builder import CasinoPanel
 from casino.discord_bot.presentation.embeds import EmbedFactory
 from casino.discord_bot.presentation.errors import DiscordErrorPresenter
+from casino.discord_bot.presentation.interactions import send_panel
 from casino.discord_bot.presentation.ids import ComponentIdCodec
 from casino.discord_bot.presentation.modals import (
     ProvablyFairCheckModal,
@@ -197,15 +198,13 @@ class ComponentRouterCog(commands.Cog):
         )
 
     async def _on_deposit(self, interaction: discord.Interaction) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
         if not self._container.deposits.is_configured():
-            await interaction.response.send_message(
-                **self._embeds.deposits_unavailable().send_kwargs(ephemeral=True)
-            )
+            await send_panel(interaction, self._embeds.deposits_unavailable(), ephemeral=True)
             return
         user = await self._container.users.get_or_create(str(interaction.user.id))
-        await interaction.response.send_message(
-            **self._embeds.deposit(user).send_kwargs(ephemeral=True)
-        )
+        await send_panel(interaction, self._embeds.deposit(user), ephemeral=True)
 
     async def _on_withdraw(self, interaction: discord.Interaction) -> None:
         user = await self._container.users.get_or_create(str(interaction.user.id))

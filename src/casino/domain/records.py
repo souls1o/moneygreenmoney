@@ -20,6 +20,7 @@ from casino.domain.enums import (
     TransactionStatus,
     TransactionType,
     UserRole,
+    WagerRaceStatus,
 )
 from casino.utils.money import SolAmount
 
@@ -550,6 +551,12 @@ class GuildConfigRecord:
     baccarat_channel_id: str | None = None
     baccarat_history_channel_id: str | None = None
     baccarat_message_id: str | None = None
+    wager_race_channel_id: str | None = None
+    wager_race_message_id: str | None = None
+    wager_race_first_usd: Decimal = Decimal("0")
+    wager_race_second_usd: Decimal = Decimal("0")
+    wager_race_third_usd: Decimal = Decimal("0")
+    wager_race_fourth_fifth_usd: Decimal = Decimal("0")
     version: int = 0
     updated_at: datetime | None = None
 
@@ -586,6 +593,40 @@ class GuildConfigRecord:
 
 
 @dataclass(slots=True)
+class WagerRaceRecord:
+    race_id: str
+    guild_id: str
+    status: WagerRaceStatus = WagerRaceStatus.OPEN
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    wagers_lamports: dict[str, int] = field(default_factory=dict)
+    prize_usd: list[str] = field(default_factory=list)
+    prize_lamports: list[int] = field(default_factory=list)
+    payouts_lamports: dict[str, int] = field(default_factory=dict)
+    place_ids: list[str] = field(default_factory=list)
+    channel_id: str | None = None
+    message_id: str | None = None
+    ledger_ids: list[str] = field(default_factory=list)
+    version: int = 0
+    created_at: datetime | None = None
+    settled_at: datetime | None = None
+
+    def is_open(self) -> bool:
+        return self.status is WagerRaceStatus.OPEN
+
+    def ranked(self, *, limit: int = 5) -> list[tuple[str, int]]:
+        from casino.domain.wager_race import ranked_entries
+
+        return ranked_entries(self.wagers_lamports, limit=limit)
+
+    def prize_for_place(self, place: int) -> int:
+        index = place - 1
+        if index < 0 or index >= len(self.prize_lamports):
+            return 0
+        return int(self.prize_lamports[index])
+
+
+@dataclass(slots=True)
 class RainRecord:
     rain_id: str
     status: RainStatus
@@ -604,6 +645,10 @@ class RainRecord:
     ledger_ids: list[str] = field(default_factory=list)
     payouts_lamports: dict[str, int] = field(default_factory=dict)
     fair_digest: str = ""
+    wager_required_lamports: int | None = None
+    deposit_required_lamports: int | None = None
+    wager_required_fiat: Decimal | None = None
+    deposit_required_fiat: Decimal | None = None
     version: int = 0
     created_at: datetime | None = None
     expires_at: datetime | None = None
@@ -617,6 +662,34 @@ class RainRecord:
 
     def is_open(self) -> bool:
         return self.status is RainStatus.PENDING
+
+    def wager_requirement_lamports(self) -> int:
+        if self.wager_required_lamports is not None:
+            return int(self.wager_required_lamports)
+        from casino.domain.rain import default_rain_requirement_lamports
+
+        return default_rain_requirement_lamports(self.amount_lamports)
+
+    def deposit_requirement_lamports(self) -> int:
+        if self.deposit_required_lamports is not None:
+            return int(self.deposit_required_lamports)
+        from casino.domain.rain import default_rain_requirement_lamports
+
+        return default_rain_requirement_lamports(self.amount_lamports, deposit=True)
+
+    def wager_requirement_fiat(self) -> Decimal:
+        if self.wager_required_fiat is not None:
+            return self.wager_required_fiat
+        from casino.domain.rain import default_rain_requirement_fiat
+
+        return default_rain_requirement_fiat(self.amount_fiat)
+
+    def deposit_requirement_fiat(self) -> Decimal:
+        if self.deposit_required_fiat is not None:
+            return self.deposit_required_fiat
+        from casino.domain.rain import default_rain_requirement_fiat
+
+        return default_rain_requirement_fiat(self.amount_fiat, deposit=True)
 
 
 @dataclass(slots=True)

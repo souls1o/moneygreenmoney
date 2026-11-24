@@ -196,6 +196,10 @@ class TestDocumentMapper:
             nonce=3,
             created_at=now,
             expires_at=now,
+            wager_required_lamports=100_000_000,
+            deposit_required_lamports=10_000_000,
+            wager_required_fiat=Decimal("10"),
+            deposit_required_fiat=Decimal("1"),
         )
         document = mapper.rain_to_document(rain)
         loaded = mapper.rain_from_document(document)
@@ -204,3 +208,5 @@ class TestDocumentMapper:
         assert loaded.channel_id == "80"
         assert loaded.amount_fiat == Decimal("50")
         assert loaded.status is RainStatus.PENDING
+        assert loaded.wager_required_lamports == 100_000_000
+        assert loaded.deposit_required_fiat == Decimal("1")

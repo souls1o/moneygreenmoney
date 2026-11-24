@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from casino.container import AppContainer
 from casino.discord_bot.presentation.embeds import EmbedFactory
+from casino.discord_bot.presentation.interactions import ack, send_panel
 from casino.logging.logger import LogContext
 
 
@@ -24,6 +25,7 @@ class AffiliateCog(commands.Cog):
         interaction: discord.Interaction,
         member: discord.User | None = None,
     ) -> None:
+        await ack(interaction)
         await self._container.rate_limits.enforce(f"affiliate:{interaction.user.id}")
         with LogContext.bind(userId=str(interaction.user.id)):
             if member is not None:
@@ -31,5 +33,5 @@ class AffiliateCog(commands.Cog):
             stats = await self._container.affiliates.stats(str(interaction.user.id))
             bound = member is not None
             panel = self._embeds.affiliate(interaction.user, stats, just_bound=bound)
-            await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+            await send_panel(interaction, panel, ephemeral=True)
             panel.stop()

@@ -41,6 +41,7 @@ _SLOT_FIELDS: dict[GuildConfigSlot, str] = {
     GuildConfigSlot.JACKPOT_HISTORY: "jackpotHistoryChannelId",
     GuildConfigSlot.BACCARAT: "baccaratChannelId",
     GuildConfigSlot.BACCARAT_HISTORY: "baccaratHistoryChannelId",
+    GuildConfigSlot.WAGER_RACE: "wagerRaceChannelId",
 }
 
 
@@ -76,6 +77,8 @@ class GuildConfigRepository(MongoRepository):
             update["$unset"] = {"supportMessageId": ""}
         if slot is GuildConfigSlot.JACKPOT:
             update["$unset"] = {"jackpotMessageId": ""}
+        if slot is GuildConfigSlot.WAGER_RACE:
+            update["$unset"] = {"wagerRaceMessageId": ""}
         document = await self.collection.find_one_and_update(
             {"guildId": guild_id},
             update,
@@ -190,6 +193,66 @@ class GuildConfigRepository(MongoRepository):
             {"guildId": guild_id},
             {
                 "$set": {"baccaratMessageId": message_id, "updatedAt": now},
+                "$inc": {"version": 1},
+                "$setOnInsert": {"guildId": guild_id},
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        return self._mapper.guild_config_from_document(document)
+
+    async def list_wager_race_guild_ids(
+        self, session: AsyncIOMotorClientSession | None = None
+    ) -> list[str]:
+        cursor = self.collection.find(
+            {"wagerRaceChannelId": {"$nin": [None, ""]}},
+            {"guildId": 1},
+            session=session,
+        )
+        return [str(document["guildId"]) async for document in cursor if document.get("guildId")]
+
+    async def set_wager_race_prizes(
+        self,
+        guild_id: str,
+        *,
+        first_usd,
+        second_usd,
+        third_usd,
+        fourth_fifth_usd,
+        now: datetime,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> GuildConfigRecord:
+        document = await self.collection.find_one_and_update(
+            {"guildId": guild_id},
+            {
+                "$set": {
+                    "wagerRaceFirstUsd": MongoRepository.decimal_to_str(first_usd),
+                    "wagerRaceSecondUsd": MongoRepository.decimal_to_str(second_usd),
+                    "wagerRaceThirdUsd": MongoRepository.decimal_to_str(third_usd),
+                    "wagerRaceFourthFifthUsd": MongoRepository.decimal_to_str(fourth_fifth_usd),
+                    "updatedAt": now,
+                },
+                "$inc": {"version": 1},
+                "$setOnInsert": {"guildId": guild_id},
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+            session=session,
+        )
+        return self._mapper.guild_config_from_document(document)
+
+    async def set_wager_race_message(
+        self,
+        guild_id: str,
+        message_id: str,
+        now: datetime,
+        session: AsyncIOMotorClientSession | None = None,
+    ) -> GuildConfigRecord:
+        document = await self.collection.find_one_and_update(
+            {"guildId": guild_id},
+            {
+                "$set": {"wagerRaceMessageId": message_id, "updatedAt": now},
                 "$inc": {"version": 1},
                 "$setOnInsert": {"guildId": guild_id},
             },

@@ -12,7 +12,11 @@ from casino.services.ledger_service import LedgerService
 from casino.services.user_service import UserService
 from casino.services.withdrawal_service import WithdrawalService
 from casino.solana_client.addresses import SolanaAddressValidator
-from casino.solana_client.rpc import RENT_EXEMPT_FALLBACK_LAMPORTS, SWEEP_FEE_LAMPORTS
+from casino.solana_client.rpc import (
+    RENT_EXEMPT_FALLBACK_LAMPORTS,
+    SWEEP_FEE_LAMPORTS,
+    SolanaTransferUnconfirmedError,
+)
 from casino.utils.identifiers import IdentifierFactory
 from casino.utils.money import SolAmount
 from tests.conftest import FrozenClock, StubPriceService, StubSettings
@@ -33,6 +37,7 @@ class StubRpc:
     balance = 10_000_000_000
     sent: list[tuple[str, int]] = []
     fail = False
+    unconfirmed = False
 
     async def get_balance(self, address: str) -> int:
         return self.balance
@@ -52,6 +57,9 @@ class StubRpc:
     async def send_from_super(self, destination: str, amount: SolAmount) -> str:
         if self.fail:
             raise RuntimeError("rpc down")
+        if self.unconfirmed:
+            self.sent.append((destination, amount.lamports))
+            raise SolanaTransferUnconfirmedError("withdraw-sig")
         self.sent.append((destination, amount.lamports))
         return "withdraw-sig"
 
@@ -82,6 +90,7 @@ def _service(*, enabled: bool = True):
     rpc.sent = []
     rpc.swept_users = []
     rpc.fail = False
+    rpc.unconfirmed = False
     rpc.balance = 10_000_000_000
     service = WithdrawalService(
         settings,  # type: ignore[arg-type]
@@ -185,6 +194,25 @@ async def test_withdrawal_refunds_when_send_fails() -> None:
     assert house_repo.record.sol_balance_lamports == 0
     refunds = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.REFUND]
     assert len(refunds) == 1
+
+
+@pytest.mark.asyncio
+async def test_withdrawal_keeps_debit_when_send_is_unconfirmed() -> None:
+    service, users_repo, ledger_repo, tx_repo, rpc, clock, house_repo = _service()
+    _user(users_repo, clock)
+    _seed_ledger(ledger_repo, clock, lamports=1_000_000_000)
+    rpc.unconfirmed = True
+    result = await service.request("1", SolAmount.parse("0.25"), DESTINATION)
+    assert result.signature == "withdraw-sig"
+    assert users_repo.users["1"].sol_balance_lamports == 750_000_000
+    assert users_repo.users["1"].total_withdrawn_lamports == 250_000_000
+    assert rpc.sent == [(DESTINATION, 250_000_000)]
+    assert house_repo.record.sol_balance_lamports == 0
+    refunds = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.REFUND]
+    assert refunds == []
+    stored = await tx_repo.find_by_id(next(iter(tx_repo.items)))
+    assert stored is not None
+    assert stored.solana_tx_signature == "withdraw-sig"
 
 
 @pytest.mark.asyncio

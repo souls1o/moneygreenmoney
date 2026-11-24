@@ -75,6 +75,7 @@ class GameService:
         affiliates: AffiliateService | None = None,
         jackpot_repository: JackpotRepository | None = None,
         baccarat_repository: BaccaratRepository | None = None,
+        wager_races=None,
     ) -> None:
         self._games = game_repository
         self._users = user_repository
@@ -94,6 +95,7 @@ class GameService:
         )
         self._jackpots = jackpot_repository
         self._baccarat = baccarat_repository
+        self._wager_races = wager_races
         self._logger = get_logger("casino.game")
 
     async def create_game(
@@ -444,6 +446,7 @@ class GameService:
                 now=now,
                 session=session,
             )
+            await self._record_race_wager(player_id, game.wager_for(player_id), game, session=session)
         for seat_id in game.house_seat_ids:
             _treasury, house_refund = await self._balances.credit_house_reserve(
                 amount=game.wager_for(seat_id),
@@ -1178,6 +1181,7 @@ class GameService:
                 now=now,
                 session=session,
             )
+            await self._record_race_wager(player_id, bet, game, session=session)
 
         if not collected_fee.is_zero():
             affiliate_ids = await self._affiliates.settle_game(
@@ -1577,6 +1581,7 @@ class GameService:
             now=now,
             session=session,
         )
+        await self._record_race_wager(game.creator_id, stake, game, session=session)
         if not collected.is_zero() and player_won_any:
             affiliate_ids = await self._affiliates.settle_game(
                 game,
@@ -1754,6 +1759,7 @@ class GameService:
             now=now,
             session=session,
         )
+        await self._record_race_wager(game.creator_id, bet, game, session=session)
         game.status = GameStatus.COMPLETED
         game.house_fee_lamports = 0
         game.house_fee_usd = Decimal("0")
@@ -1927,6 +1933,7 @@ class GameService:
             now=now,
             session=session,
         )
+        await self._record_race_wager(game.creator_id, bet, game, session=session)
         game.status = GameStatus.COMPLETED
         game.house_fee_lamports = 0
         game.house_fee_usd = Decimal("0")
@@ -1945,3 +1952,18 @@ class GameService:
             minesGems=gems,
             minesHit=game.mines_hit,
         )
+
+    async def _record_race_wager(self, user_id: str, amount: SolAmount, game: GameRecord, *, session) -> None:
+        if self._wager_races is None or not game.guild_id:
+            return
+        try:
+            await self._wager_races.record_wager(
+                game.guild_id,
+                user_id,
+                amount.lamports,
+                game_type=game.game_type,
+                limbo_target=game.limbo_target,
+                session=session,
+            )
+        except Exception:
+            self._logger.exception("wager_race_record_failed", userId=user_id, gameId=game.game_id)

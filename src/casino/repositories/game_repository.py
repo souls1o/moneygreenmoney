@@ -9,6 +9,7 @@ from pymongo import ReturnDocument
 from casino.db.mongo import COLLECTION_GAMES
 from casino.domain.enums import CoinSide, GameStatus
 from casino.domain.records import GameRecord, is_house_seat
+from casino.domain.wager_race import qualifying_lamports
 from casino.repositories.base import MongoRepository
 from casino.repositories.mappers import DocumentMapper
 
@@ -50,45 +51,21 @@ class GameRepository(MongoRepository):
         return [self._mapper.game_from_document(doc) async for doc in cursor]
 
     async def sum_player_wagered_since(self, discord_id: str, since: datetime) -> int:
-        pipeline = [
+        cursor = self.collection.find(
             {
-                "$match": {
-                    **self._player_completed_query(discord_id),
-                    "resolvedAt": {"$gte": since},
-                }
-            },
-            {
-                "$group": {
-                    "_id": None,
-                    "total": {
-                        "$sum": {
-                            "$let": {
-                                "vars": {
-                                    "entry": {
-                                        "$first": {
-                                            "$filter": {
-                                                "input": {
-                                                    "$objectToArray": {
-                                                        "$ifNull": ["$playerWagerLamports", {}]
-                                                    }
-                                                },
-                                                "as": "item",
-                                                "cond": {"$eq": ["$$item.k", discord_id]},
-                                            }
-                                        }
-                                    }
-                                },
-                                "in": {"$ifNull": ["$$entry.v", "$betAmountLamports"]},
-                            }
-                        }
-                    },
-                }
-            },
-        ]
-        document = await self.aggregate_first(pipeline)
-        if not document:
-            return 0
-        return int(document.get("total") or 0)
+                **self._player_completed_query(discord_id),
+                "resolvedAt": {"$gte": since},
+            }
+        )
+        total = 0
+        async for document in cursor:
+            game = self._mapper.game_from_document(document)
+            total += qualifying_lamports(
+                game.wager_for(discord_id).lamports,
+                game_type=game.game_type,
+                limbo_target=game.limbo_target,
+            )
+        return total
 
     async def list_open(self, limit: int = 20) -> list[GameRecord]:
         cursor = (

@@ -50,3 +50,6 @@ class IdentifierFactory:
 
     def baccarat_id(self) -> str:
         return f"bc_{uuid.uuid4().hex}"
+
+    def wager_race_id(self) -> str:
+        return f"wr_{uuid.uuid4().hex}"

@@ -14,7 +14,7 @@ from casino.domain.baccarat import (
     payout_lamports,
     profit_lamports,
 )
-from casino.domain.enums import BaccaratStatus, LedgerEntryType, TransactionType
+from casino.domain.enums import BaccaratStatus, GameType, LedgerEntryType, TransactionType
 from casino.domain.records import BaccaratRecord
 from casino.errors import BaccaratError, InsufficientHouseReserveError, NotFoundError
 from casino.logging.logger import LogContext, get_logger
@@ -45,6 +45,7 @@ class BaccaratService:
         unit_of_work: UnitOfWorkFactory,
         settings: Settings,
         house_repository,
+        wager_races=None,
     ) -> None:
         self._tables = baccarat_repository
         self._users = user_service
@@ -59,6 +60,7 @@ class BaccaratService:
         self._uow = unit_of_work
         self._settings = settings
         self._house = house_repository
+        self._wager_races = wager_races
         self._logger = get_logger("casino.baccarat")
 
     async def get(self, baccarat_id: str) -> BaccaratRecord:
@@ -381,6 +383,19 @@ class BaccaratService:
                 now=now,
                 session=session,
             )
+            if self._wager_races is not None and table.guild_id:
+                try:
+                    await self._wager_races.record_wager(
+                        table.guild_id,
+                        player_id,
+                        wager.lamports,
+                        game_type=GameType.BACCARAT,
+                        session=session,
+                    )
+                except Exception:
+                    self._logger.exception(
+                        "wager_race_record_failed", userId=player_id, baccaratId=table.baccarat_id
+                    )
         table.house_pnl_lamports = house_pnl
 
     async def _require_house_cap(self, reserved_lamports: int, extra_lamports: int) -> None:

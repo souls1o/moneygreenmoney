@@ -15,7 +15,7 @@ from casino.services.ledger_service import LedgerService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
 from casino.solana_client.addresses import SolanaAddressValidator
-from casino.solana_client.rpc import SWEEP_FEE_LAMPORTS, SolanaRpcGateway
+from casino.solana_client.rpc import SWEEP_FEE_LAMPORTS, SolanaRpcGateway, SolanaTransferUnconfirmedError
 from casino.utils.money import SolAmount
 
 
@@ -106,6 +106,14 @@ class WithdrawalService:
                 )
             try:
                 signature = await self._rpc.send_from_super(wallet, payout)
+            except SolanaTransferUnconfirmedError as exc:
+                signature = exc.signature
+                self._logger.warning(
+                    "withdrawal_sent_unconfirmed",
+                    destination=wallet,
+                    amountLamports=payout.lamports,
+                    txSignature=signature,
+                )
             except Exception as exc:
                 self._logger.exception(
                     "withdrawal_send_failed",

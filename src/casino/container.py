@@ -25,6 +25,7 @@ from casino.repositories.ticket_repository import TicketRepository
 from casino.repositories.rate_limit_repository import RateLimitRepository
 from casino.repositories.transaction_repository import TransactionRepository
 from casino.repositories.user_repository import UserRepository
+from casino.repositories.wager_race_repository import WagerRaceRepository
 from casino.services.admin_service import AdminService
 from casino.services.affiliate_service import AffiliateService
 from casino.services.baccarat_service import BaccaratService
@@ -48,6 +49,7 @@ from casino.services.tip_service import TipService
 from casino.services.user_service import UserService
 from casino.services.validation_service import ValidationService
 from casino.services.verification_service import VerificationService
+from casino.services.wager_race_service import WagerRaceService
 from casino.services.withdrawal_service import WithdrawalService
 from casino.solana_client.addresses import SolanaAddressValidator
 from casino.solana_client.deposit_parser import SolanaDepositParser
@@ -65,6 +67,7 @@ from casino.workers.expiry_worker import GameExpiryWorker
 from casino.workers.locks import DistributedLockService
 from casino.workers.jackpot_worker import JackpotWorker
 from casino.workers.baccarat_worker import BaccaratWorker
+from casino.workers.wager_race_worker import WagerRaceWorker
 from casino.workers.rain_worker import RainExpiryWorker
 from casino.workers.scheduler import WorkerScheduler
 
@@ -97,6 +100,7 @@ class AppContainer:
     rains: RainService
     jackpots: JackpotService
     baccarat: BaccaratService
+    wager_races: WagerRaceService
     tickets: TicketService
     tips: TipService
     workers: WorkerScheduler
@@ -106,6 +110,7 @@ class AppContainer:
     rain_worker: RainExpiryWorker
     jackpot_worker: JackpotWorker
     baccarat_worker: BaccaratWorker
+    wager_race_worker: WagerRaceWorker
     house: HouseRepository
     fair: ProvablyFairService
 
@@ -138,6 +143,11 @@ class AppContainer:
             "baccarat",
             self.settings.expiry_poll_interval_seconds,
             self.baccarat_worker.tick,
+        )
+        self.workers.start(
+            "wager-race",
+            self.settings.expiry_poll_interval_seconds,
+            self.wager_race_worker.tick,
         )
         if self.settings.enable_deposit_monitor and self.solana.is_configured:
             self.workers.start(
@@ -226,6 +236,16 @@ class ContainerFactory:
             baccarat_repository=baccarat_repo,
         )
         guild_configs = GuildConfigService(guild_config_repo, clock)
+        wager_races = WagerRaceService(
+            WagerRaceRepository(mongo, mapper),
+            guild_configs,
+            balances,
+            house_repo,
+            price,
+            clock,
+            uow,
+        )
+        games._wager_races = wager_races
         verification = VerificationService(clock)
         house_stats = HouseStatsService(
             games_repo,
@@ -315,6 +335,7 @@ class ContainerFactory:
             uow,
             settings,
             house_repo,
+            wager_races=wager_races,
         )
         jackpot_worker = JackpotWorker(jackpots)
         baccarat = BaccaratService(
@@ -331,8 +352,10 @@ class ContainerFactory:
             uow,
             settings,
             house_repo,
+            wager_races=wager_races,
         )
         baccarat_worker = BaccaratWorker(baccarat)
+        wager_race_worker = WagerRaceWorker(wager_races)
         tickets = TicketService(
             TicketRepository(mongo, mapper),
             guild_configs,
@@ -378,6 +401,7 @@ class ContainerFactory:
             rains=rains,
             jackpots=jackpots,
             baccarat=baccarat,
+            wager_races=wager_races,
             tickets=tickets,
             tips=tips,
             workers=workers,
@@ -387,6 +411,7 @@ class ContainerFactory:
             rain_worker=rain_worker,
             jackpot_worker=jackpot_worker,
             baccarat_worker=baccarat_worker,
+            wager_race_worker=wager_race_worker,
             house=house_repo,
             fair=fair,
         )

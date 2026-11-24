@@ -14,6 +14,7 @@ from casino.domain.enums import (
     JackpotStatus,
     RainStatus,
     TicketCategory,
+    WagerRaceStatus,
     TicketStatus,
     TransactionStatus,
     TransactionType,
@@ -30,6 +31,7 @@ from casino.domain.records import (
     JackpotRecord,
     RainRecord,
     TicketRecord,
+    WagerRaceRecord,
     TransactionRecord,
     UserRecord,
 )
@@ -407,6 +409,12 @@ class DocumentMapper:
             "baccaratChannelId": config.baccarat_channel_id,
             "baccaratHistoryChannelId": config.baccarat_history_channel_id,
             "baccaratMessageId": config.baccarat_message_id,
+            "wagerRaceChannelId": config.wager_race_channel_id,
+            "wagerRaceMessageId": config.wager_race_message_id,
+            "wagerRaceFirstUsd": MongoRepository.decimal_to_str(config.wager_race_first_usd),
+            "wagerRaceSecondUsd": MongoRepository.decimal_to_str(config.wager_race_second_usd),
+            "wagerRaceThirdUsd": MongoRepository.decimal_to_str(config.wager_race_third_usd),
+            "wagerRaceFourthFifthUsd": MongoRepository.decimal_to_str(config.wager_race_fourth_fifth_usd),
             "version": config.version,
             "updatedAt": config.updated_at,
         }
@@ -447,6 +455,12 @@ class DocumentMapper:
             baccarat_channel_id=document.get("baccaratChannelId"),
             baccarat_history_channel_id=document.get("baccaratHistoryChannelId"),
             baccarat_message_id=document.get("baccaratMessageId"),
+            wager_race_channel_id=document.get("wagerRaceChannelId"),
+            wager_race_message_id=document.get("wagerRaceMessageId"),
+            wager_race_first_usd=self._prize_usd(document.get("wagerRaceFirstUsd")),
+            wager_race_second_usd=self._prize_usd(document.get("wagerRaceSecondUsd")),
+            wager_race_third_usd=self._prize_usd(document.get("wagerRaceThirdUsd")),
+            wager_race_fourth_fifth_usd=self._prize_usd(document.get("wagerRaceFourthFifthUsd")),
             version=int(document.get("version", 0)),
             updated_at=self._time.to_utc(document.get("updatedAt")),
         )
@@ -470,6 +484,14 @@ class DocumentMapper:
             "createdAt": rain.created_at,
             "expiresAt": rain.expires_at,
         }
+        if rain.wager_required_lamports is not None:
+            document["wagerRequiredLamports"] = int(rain.wager_required_lamports)
+        if rain.deposit_required_lamports is not None:
+            document["depositRequiredLamports"] = int(rain.deposit_required_lamports)
+        if rain.wager_required_fiat is not None:
+            document["wagerRequiredFiat"] = MongoRepository.decimal_to_str(rain.wager_required_fiat)
+        if rain.deposit_required_fiat is not None:
+            document["depositRequiredFiat"] = MongoRepository.decimal_to_str(rain.deposit_required_fiat)
         if rain.guild_id:
             document["guildId"] = rain.guild_id
         if rain.channel_id:
@@ -502,6 +524,26 @@ class DocumentMapper:
             ledger_ids=list(document.get("ledgerIds") or []),
             payouts_lamports={str(key): int(value) for key, value in payouts.items()},
             fair_digest=document.get("fairDigest") or "",
+            wager_required_lamports=(
+                int(document["wagerRequiredLamports"])
+                if document.get("wagerRequiredLamports") is not None
+                else None
+            ),
+            deposit_required_lamports=(
+                int(document["depositRequiredLamports"])
+                if document.get("depositRequiredLamports") is not None
+                else None
+            ),
+            wager_required_fiat=(
+                MongoRepository.str_to_decimal(document.get("wagerRequiredFiat"))
+                if document.get("wagerRequiredFiat") not in (None, "")
+                else None
+            ),
+            deposit_required_fiat=(
+                MongoRepository.str_to_decimal(document.get("depositRequiredFiat"))
+                if document.get("depositRequiredFiat") not in (None, "")
+                else None
+            ),
             version=int(document.get("version", 0)),
             created_at=self._time.to_utc(document.get("createdAt")),
             expires_at=self._time.to_utc(document.get("expiresAt")),
@@ -783,3 +825,50 @@ class DocumentMapper:
             value=document["value"],
             updated_at=self._time.to_utc(document.get("updatedAt")),
         )
+
+    def wager_race_to_document(self, race: WagerRaceRecord) -> dict[str, Any]:
+        return {
+            "raceId": race.race_id,
+            "guildId": race.guild_id,
+            "status": race.status.value,
+            "startsAt": race.starts_at,
+            "endsAt": race.ends_at,
+            "wagersLamports": {key: int(value) for key, value in race.wagers_lamports.items()},
+            "prizeUsd": list(race.prize_usd),
+            "prizeLamports": [int(value) for value in race.prize_lamports],
+            "payoutsLamports": {key: int(value) for key, value in race.payouts_lamports.items()},
+            "placeIds": list(race.place_ids),
+            "channelId": race.channel_id,
+            "messageId": race.message_id,
+            "ledgerIds": list(race.ledger_ids),
+            "version": race.version,
+            "createdAt": race.created_at,
+            "settledAt": race.settled_at,
+        }
+
+    def wager_race_from_document(self, document: dict[str, Any]) -> WagerRaceRecord:
+        wagers = document.get("wagersLamports") or {}
+        payouts = document.get("payoutsLamports") or {}
+        return WagerRaceRecord(
+            race_id=document["raceId"],
+            guild_id=document["guildId"],
+            status=WagerRaceStatus(document.get("status", WagerRaceStatus.OPEN.value)),
+            starts_at=self._time.to_utc(document.get("startsAt")),
+            ends_at=self._time.to_utc(document.get("endsAt")),
+            wagers_lamports={str(key): int(value) for key, value in wagers.items()},
+            prize_usd=[str(value) for value in (document.get("prizeUsd") or [])],
+            prize_lamports=[int(value) for value in (document.get("prizeLamports") or [])],
+            payouts_lamports={str(key): int(value) for key, value in payouts.items()},
+            place_ids=[str(value) for value in (document.get("placeIds") or [])],
+            channel_id=document.get("channelId"),
+            message_id=document.get("messageId"),
+            ledger_ids=list(document.get("ledgerIds") or []),
+            version=int(document.get("version", 0)),
+            created_at=self._time.to_utc(document.get("createdAt")),
+            settled_at=self._time.to_utc(document.get("settledAt")),
+        )
+
+    def _prize_usd(self, raw) -> Any:
+        from casino.domain.wager_race import parse_prize_usd
+
+        return parse_prize_usd(raw)

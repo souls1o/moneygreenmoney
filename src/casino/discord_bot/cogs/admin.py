@@ -8,6 +8,7 @@ from casino.container import AppContainer
 from casino.discord_bot.presentation.builder import CasinoPanel
 from casino.discord_bot.presentation.config_view import build_admin_config
 from casino.discord_bot.presentation.embeds import EmbedFactory
+from casino.discord_bot.presentation.interactions import ack, send_panel
 from casino.domain.enums import GameType, GuildConfigSlot, UserRole
 from casino.logging.logger import LogContext
 from casino.utils.money import SolAmount
@@ -50,6 +51,7 @@ class AdminCog(commands.Cog):
         amount_sol: str,
         reason: str,
     ) -> None:
+        await ack(interaction)
         await self._guard(interaction)
         with LogContext.bind(userId=str(member.id)):
             user = await self._container.admin.adjust(
@@ -59,11 +61,12 @@ class AdminCog(commands.Cog):
                 reason=reason,
                 actor_id=str(interaction.user.id),
             )
-            await interaction.response.send_message(
-                **self._embeds.success(
+            await send_panel(
+                interaction,
+                self._embeds.success(
                     "Credited",
                     f"{member.mention} now has `{self._container.math.format_sol(user.sol_balance)} SOL`.",
-                ).send_kwargs(ephemeral=True)
+                ),
             )
 
     @admin.command(name="debit", description="Debit SOL from a player")
@@ -75,6 +78,7 @@ class AdminCog(commands.Cog):
         amount_sol: str,
         reason: str,
     ) -> None:
+        await ack(interaction)
         await self._guard(interaction)
         with LogContext.bind(userId=str(member.id)):
             user = await self._container.admin.adjust(
@@ -84,53 +88,62 @@ class AdminCog(commands.Cog):
                 reason=reason,
                 actor_id=str(interaction.user.id),
             )
-            await interaction.response.send_message(
-                **self._embeds.success(
+            await send_panel(
+                interaction,
+                self._embeds.success(
                     "Debited",
                     f"{member.mention} now has `{self._container.math.format_sol(user.sol_balance)} SOL`.",
-                ).send_kwargs(ephemeral=True)
+                ),
             )
 
     @admin.command(name="cancel", description="Force-cancel an open coinflip")
     @app_commands.describe(game_id="Coinflip game ID")
     async def cancel(self, interaction: discord.Interaction, game_id: str) -> None:
+        await ack(interaction)
         await self._guard(interaction)
         await self._container.admin.cancel_game(game_id.strip(), str(interaction.user.id))
-        await interaction.response.send_message(
-            **self._embeds.success("Cancelled", f"Game `{game_id}` was refunded.").send_kwargs(ephemeral=True)
+        await send_panel(
+            interaction,
+            self._embeds.success("Cancelled", f"Game `{game_id}` was refunded."),
         )
 
     @admin.command(name="expire", description="Auto-flip full tables that have waited an hour")
     async def expire(self, interaction: discord.Interaction) -> None:
+        await ack(interaction)
         await self._guard(interaction)
         count = await self._container.admin.expire_games()
-        await interaction.response.send_message(
-            **self._embeds.success("Auto-flip pass", f"Resolved `{count}` full tables.").send_kwargs(ephemeral=True)
+        await send_panel(
+            interaction,
+            self._embeds.success("Auto-flip pass", f"Resolved `{count}` full tables."),
         )
 
     @admin.command(name="house", description="Show house treasury")
     async def house(self, interaction: discord.Interaction) -> None:
+        await ack(interaction)
         await self._guard(interaction)
         treasury = await self._container.admin.house_treasury()
-        await interaction.response.send_message(
-            **self._embeds.house(
+        await send_panel(
+            interaction,
+            self._embeds.house(
                 treasury.sol_balance_lamports,
                 treasury.total_fees_collected_lamports,
-            ).send_kwargs(ephemeral=True)
+            ),
         )
 
     @app_commands.command(name="housestats", description="Show house balance, super wallet, and timeframe stats")
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def housestats(self, interaction: discord.Interaction) -> None:
+        await ack(interaction)
         role_ids = self._role_ids(interaction)
         self._container.permissions.require_house_stats_viewer(interaction.user.id, role_ids)
         report = await self._container.house_stats.snapshot()
-        await interaction.response.send_message(
-            **self._embeds.house_stats(
+        await send_panel(
+            interaction,
+            self._embeds.house_stats(
                 report,
                 actions=self._can_manage_house(interaction, role_ids),
-            ).send_kwargs(ephemeral=True)
+            ),
         )
 
     @app_commands.command(name="reset_housestats", description="Reset house stats windows and lifetime fees")
@@ -138,13 +151,15 @@ class AdminCog(commands.Cog):
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def reset_housestats(self, interaction: discord.Interaction) -> None:
+        await ack(interaction)
         await self._guard(interaction)
         await self._container.admin.reset_house_stats(str(interaction.user.id))
-        await interaction.response.send_message(
-            **self._embeds.success(
+        await send_panel(
+            interaction,
+            self._embeds.success(
                 "House stats reset",
                 "Timeframe stats and lifetime fees start from now. The house book balance was not changed.",
-            ).send_kwargs(ephemeral=True)
+            ),
         )
 
     @app_commands.command(name="clear_housebal", description="Set the house book SOL balance to zero")
@@ -152,41 +167,44 @@ class AdminCog(commands.Cog):
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def clear_housebal(self, interaction: discord.Interaction) -> None:
+        await ack(interaction)
         await self._guard(interaction)
         treasury = await self._container.admin.clear_house_balance(str(interaction.user.id))
-        await interaction.response.send_message(
-            **self._embeds.success(
+        await send_panel(
+            interaction,
+            self._embeds.success(
                 "House book cleared",
                 f"House book is now `{self._container.math.format_sol(SolAmount.from_lamports(treasury.sol_balance_lamports))} SOL`.",
-            ).send_kwargs(ephemeral=True)
+            ),
         )
 
     @admin.command(name="fund-house", description="Add SOL to house reserves for call-bot")
     @app_commands.describe(amount_sol="SOL amount to add to reserves")
     async def fund_house(self, interaction: discord.Interaction, amount_sol: str) -> None:
+        await ack(interaction)
         await self._guard(interaction)
         treasury = await self._container.admin.fund_house(
             SolAmount.parse(amount_sol),
             str(interaction.user.id),
         )
-        await interaction.response.send_message(
-            **self._embeds.house(
+        await send_panel(
+            interaction,
+            self._embeds.house(
                 treasury.sol_balance_lamports,
                 treasury.total_fees_collected_lamports,
-            ).send_kwargs(ephemeral=True)
+            ),
         )
 
     @admin.command(name="config", description="Set lobby, outcomes, roles, PF, and admin alert channels")
     async def config(self, interaction: discord.Interaction) -> None:
+        await ack(interaction)
         await self._guard(interaction)
         if interaction.guild_id is None:
-            await interaction.response.send_message(
-                **self._embeds.error("Use this command in a server.").send_kwargs(ephemeral=True)
-            )
+            await send_panel(interaction, self._embeds.error("Use this command in a server."))
             return
         config = await self._container.guild_configs.get(str(interaction.guild_id))
         panel = build_admin_config(self._container, self._embeds, config)
-        await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+        await send_panel(interaction, panel)
 
     @admin.command(name="post", description="Send casino embeds to a channel")
     @app_commands.describe(
@@ -208,6 +226,7 @@ class AdminCog(commands.Cog):
             app_commands.Choice(name="Jackpot history header", value="jackpot_history"),
             app_commands.Choice(name="Baccarat panel", value="baccarat"),
             app_commands.Choice(name="Baccarat history header", value="baccarat_history"),
+            app_commands.Choice(name="Wager race panel", value="wager_race"),
             app_commands.Choice(name="Provably fair panel", value="provably_fair"),
             app_commands.Choice(name="Verify panel", value="verify"),
             app_commands.Choice(name="Support panel", value="support"),
@@ -223,13 +242,11 @@ class AdminCog(commands.Cog):
         embed: app_commands.Choice[str],
         channel: discord.TextChannel | None = None,
     ) -> None:
+        await ack(interaction)
         await self._guard(interaction)
         if interaction.guild is None:
-            await interaction.response.send_message(
-                **self._embeds.error("Use this command in a server.").send_kwargs(ephemeral=True)
-            )
+            await send_panel(interaction, self._embeds.error("Use this command in a server."))
             return
-        await interaction.response.defer(ephemeral=True)
         here = interaction.channel if isinstance(interaction.channel, discord.TextChannel) else None
         posted = await self._post_embeds(interaction.guild, embed.value, channel, here)
         if not posted:
@@ -330,6 +347,10 @@ class AdminCog(commands.Cog):
             baccarat_line = await self._post_baccarat(guild, chosen if kind == "baccarat" else None)
             if baccarat_line:
                 posted.append(baccarat_line)
+        if kind in {"wager_race", "all_configured"}:
+            race_line = await self._post_wager_race(guild, chosen if kind == "wager_race" else None)
+            if race_line:
+                posted.append(race_line)
         return posted
 
     async def _post_provably_fair(self, guild: discord.Guild, override_channel_id: str | None) -> str | None:
@@ -423,6 +444,24 @@ class AdminCog(commands.Cog):
         mention = channel.mention if isinstance(channel, discord.TextChannel) else "baccarat"
         return f"Baccarat → {mention}"
 
+    async def _post_wager_race(self, guild: discord.Guild, override_channel_id: str | None) -> str | None:
+        from casino.discord_bot.bot import CasinoBot
+
+        if override_channel_id:
+            config = await self._container.guild_configs.get(str(guild.id))
+            if config.wager_race_channel_id != override_channel_id:
+                await self._container.guild_configs.set_slot(
+                    str(guild.id), GuildConfigSlot.WAGER_RACE, override_channel_id
+                )
+        if not isinstance(self.bot, CasinoBot):
+            return None
+        message = await self.bot.wager_race.ensure(str(guild.id), channel_id=override_channel_id)
+        if message is None:
+            return None
+        channel = message.channel
+        mention = channel.mention if isinstance(channel, discord.TextChannel) else "wager race"
+        return f"Wager race → {mention}"
+
     @admin.command(name="grant-role", description="Grant founder or moderator")
     @app_commands.describe(member="Player", role="founder or moderator")
     @app_commands.choices(
@@ -437,11 +476,13 @@ class AdminCog(commands.Cog):
         member: discord.Member,
         role: app_commands.Choice[str],
     ) -> None:
+        await ack(interaction)
         await self._guard(interaction)
         updated = await self._container.admin.grant_role(str(member.id), UserRole(role.value))
-        await interaction.response.send_message(
-            **self._embeds.success(
+        await send_panel(
+            interaction,
+            self._embeds.success(
                 "Role granted",
                 f"{member.mention} roles: {', '.join(r.value for r in updated.roles)}",
-            ).send_kwargs(ephemeral=True)
+            ),
         )

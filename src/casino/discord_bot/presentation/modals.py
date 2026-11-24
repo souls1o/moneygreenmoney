@@ -579,6 +579,38 @@ class JackpotJoinModal(discord.ui.Modal, title="Join jackpot"):
         )
 
 
+class WagerRacePrizesModal(discord.ui.Modal, title="Wager race prizes"):
+    first = discord.ui.TextInput(label="1st place USD", placeholder="100", max_length=16)
+    second = discord.ui.TextInput(label="2nd place USD", placeholder="50", max_length=16)
+    third = discord.ui.TextInput(label="3rd place USD", placeholder="25", max_length=16)
+    fourth_fifth = discord.ui.TextInput(label="4th and 5th place USD each", placeholder="10", max_length=16)
+
+    def __init__(self, container: AppContainer, embeds: EmbedFactory, guild_id: str) -> None:
+        super().__init__()
+        self._container = container
+        self._embeds = embeds
+        self._guild_id = guild_id
+        self._errors = DiscordErrorPresenter()
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from casino.discord_bot.presentation.config_view import build_admin_config
+        from casino.domain.wager_race import parse_prize_usd
+
+        try:
+            config = await self._container.guild_configs.set_wager_race_prizes(
+                self._guild_id,
+                first_usd=parse_prize_usd(str(self.first.value)),
+                second_usd=parse_prize_usd(str(self.second.value)),
+                third_usd=parse_prize_usd(str(self.third.value)),
+                fourth_fifth_usd=parse_prize_usd(str(self.fourth_fifth.value)),
+            )
+        except Exception as exc:
+            await interaction.response.send_message(**self._errors.panel_for(exc).send_kwargs(ephemeral=True))
+            return
+        panel = build_admin_config(self._container, self._embeds, config, page=7)
+        await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+
+
 class BlackjackBetModal(discord.ui.Modal, title="Change bet"):
     amount = discord.ui.TextInput(label="New bet amount", placeholder="5", max_length=16)
 

@@ -61,6 +61,34 @@ class GuildConfigService:
         self._logger.info("support_panel_stored", guildId=guild_id, messageId=message_id)
         return config
 
+    async def set_wager_race_prizes(
+        self,
+        guild_id: str,
+        *,
+        first_usd,
+        second_usd,
+        third_usd,
+        fourth_fifth_usd,
+    ) -> GuildConfigRecord:
+        config = await self._configs.set_wager_race_prizes(
+            guild_id,
+            first_usd=first_usd,
+            second_usd=second_usd,
+            third_usd=third_usd,
+            fourth_fifth_usd=fourth_fifth_usd,
+            now=self._clock.now(),
+        )
+        self._logger.info("wager_race_prizes_updated", guildId=guild_id)
+        return config
+
+    async def set_wager_race_message(self, guild_id: str, message_id: str) -> GuildConfigRecord:
+        config = await self._configs.set_wager_race_message(guild_id, message_id, self._clock.now())
+        self._logger.info("wager_race_panel_stored", guildId=guild_id, messageId=message_id)
+        return config
+
+    async def list_wager_race_guild_ids(self) -> list[str]:
+        return await self._configs.list_wager_race_guild_ids()
+
     async def set_jackpot_message(self, guild_id: str, message_id: str) -> GuildConfigRecord:
         config = await self._configs.set_jackpot_message(guild_id, message_id, self._clock.now())
         self._logger.info("jackpot_panel_stored", guildId=guild_id, messageId=message_id)

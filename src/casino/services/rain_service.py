@@ -7,7 +7,14 @@ from decimal import ROUND_DOWN, Decimal
 from casino.config.settings import Settings
 from casino.db.unit_of_work import UnitOfWorkFactory
 from casino.domain.enums import LedgerEntryType, RainStatus, TransactionType
-from casino.domain.rain import RAIN_JOIN_STATUS, RainJoinEligibility, matches_rain_join_status
+from casino.domain.rain import (
+    RAIN_JOIN_STATUS,
+    RainJoinEligibility,
+    default_rain_requirement_fiat,
+    default_rain_requirement_lamports,
+    matches_rain_join_status,
+    parse_rain_requirement_usd,
+)
 from casino.domain.records import RainRecord
 from casino.errors import NotFoundError, RainError, ValidationError
 from casino.logging.logger import LogContext, get_logger
@@ -20,13 +27,7 @@ from casino.services.user_service import UserService
 from casino.services.validation_service import ValidationService
 from casino.utils.clock import Clock
 from casino.utils.identifiers import IdentifierFactory
-from casino.utils.money import (
-    FIAT_QUANTUM,
-    RAIN_JOIN_DEPOSIT_BPS,
-    RAIN_JOIN_WAGER_BPS,
-    MathService,
-    SolAmount,
-)
+from casino.utils.money import FIAT_QUANTUM, MathService, SolAmount
 from casino.utils.rng import ProvablyFairService
 
 
@@ -80,6 +81,8 @@ class RainService:
         duration_seconds: int,
         guild_id: str | None = None,
         waive_minimum: bool = False,
+        wager_requirement_usd: Decimal | None = None,
+        deposit_requirement_usd: Decimal | None = None,
     ) -> RainRecord:
         self._require_duration(duration_seconds)
         user = await self._users.get_or_create(creator_id)
@@ -96,6 +99,24 @@ class RainService:
         pot = self._math.fiat_to_sol(fiat_amount, sol_price)
         now = self._clock.now()
         commitment = self._rng.commit()
+        wager_required_lamports, wager_required_fiat = self._requirement(
+            pot.lamports,
+            fiat_amount,
+            currency,
+            usd_price,
+            sol_price,
+            wager_requirement_usd,
+            deposit=False,
+        )
+        deposit_required_lamports, deposit_required_fiat = self._requirement(
+            pot.lamports,
+            fiat_amount,
+            currency,
+            usd_price,
+            sol_price,
+            deposit_requirement_usd,
+            deposit=True,
+        )
         rain = RainRecord(
             rain_id=self._identifiers.rain_id(),
             status=RainStatus.PENDING,
@@ -108,6 +129,10 @@ class RainService:
             server_seed=commitment.server_seed,
             client_seed=self._rng.client_seed(),
             nonce=await self._house.take_next_fair_nonce(),
+            wager_required_lamports=wager_required_lamports,
+            deposit_required_lamports=deposit_required_lamports,
+            wager_required_fiat=wager_required_fiat,
+            deposit_required_fiat=deposit_required_fiat,
             created_at=now,
             expires_at=now + timedelta(seconds=duration_seconds),
         )
@@ -155,14 +180,14 @@ class RainService:
         if not eligibility.wager_ok:
             raise RainError(
                 "You must have wagered at least "
-                f"{self._math.format_fiat_symbol(eligibility.required_fiat, eligibility.currency)} "
-                "in the last 24 hours to join this rain."
+                f"{self._math.format_fiat_symbol(eligibility.wager_required_fiat, eligibility.currency)} "
+                "since this rain started to join."
             )
         if not eligibility.deposit_ok:
             raise RainError(
                 "You must have deposited at least "
-                f"{self._math.format_fiat_symbol(eligibility.required_fiat, eligibility.currency)} "
-                "in the last 24 hours to join this rain."
+                f"{self._math.format_fiat_symbol(eligibility.deposit_required_fiat, eligibility.currency)} "
+                "since this rain started to join."
             )
         if not eligibility.status_ok:
             raise RainError(
@@ -192,12 +217,9 @@ class RainService:
         await self._users.get_or_create(player_id)
         rain = await self.get(rain_id)
         now = self._clock.now()
-        wager_required = (rain.amount_lamports * RAIN_JOIN_WAGER_BPS) // 10_000
-        deposit_required = (rain.amount_lamports * RAIN_JOIN_DEPOSIT_BPS) // 10_000
-        required_fiat = (
-            rain.amount_fiat * Decimal(RAIN_JOIN_WAGER_BPS) / Decimal(10_000)
-        ).quantize(FIAT_QUANTUM, rounding=ROUND_DOWN)
-        since = now - timedelta(hours=24)
+        wager_required = rain.wager_requirement_lamports()
+        deposit_required = rain.deposit_requirement_lamports()
+        since = rain.created_at or now
         try:
             wagered = await self._games.sum_player_wagered_since(player_id, since)
             deposited = await self._transactions.sum_player_deposited_since(player_id, since)
@@ -206,7 +228,8 @@ class RainService:
             raise RainError("Could not check rain requirements. Try again in a moment.")
         return RainJoinEligibility(
             currency=rain.currency,
-            required_fiat=required_fiat,
+            wager_required_fiat=rain.wager_requirement_fiat(),
+            deposit_required_fiat=rain.deposit_requirement_fiat(),
             wagered_fiat=self._progress_fiat(rain, wagered),
             deposited_fiat=self._progress_fiat(rain, deposited),
             wager_ok=wagered >= wager_required,
@@ -357,6 +380,29 @@ class RainService:
                 joiners=current.joiner_count(),
             )
         return current
+
+    def _requirement(
+        self,
+        amount_lamports: int,
+        amount_fiat: Decimal,
+        currency: str,
+        usd_price: Decimal,
+        sol_price: Decimal,
+        requirement_usd: Decimal | None,
+        *,
+        deposit: bool,
+    ) -> tuple[int, Decimal]:
+        if requirement_usd is None:
+            return (
+                default_rain_requirement_lamports(amount_lamports, deposit=deposit),
+                default_rain_requirement_fiat(amount_fiat, deposit=deposit),
+            )
+        usd = parse_rain_requirement_usd(requirement_usd)
+        lamports = self._math.fiat_to_sol(usd, usd_price).lamports
+        fiat = usd if currency.upper() == "USD" else (usd * sol_price / usd_price).quantize(
+            FIAT_QUANTUM, rounding=ROUND_DOWN
+        )
+        return lamports, fiat
 
     def _require_duration(self, seconds: int) -> None:
         minimum = int(self._settings.min_rain_seconds)

@@ -8,6 +8,7 @@ from casino.container import AppContainer
 from casino.discord_bot.presentation.embeds import EmbedFactory
 from casino.discord_bot.presentation.errors import DiscordErrorPresenter
 from casino.discord_bot.presentation.game_setup import start_limbo
+from casino.discord_bot.presentation.interactions import ack, send_panel
 from casino.domain.limbo import parse_limbo_multiplier
 from casino.logging.logger import LogContext
 
@@ -30,13 +31,14 @@ class LimboCog(commands.Cog):
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def limbo(self, interaction: discord.Interaction, amount: str, multiplier: str) -> None:
+        await ack(interaction, ephemeral=False)
         await self._container.rate_limits.enforce(f"limbo:{interaction.user.id}")
         with LogContext.bind(userId=str(interaction.user.id)):
             try:
                 fiat = self._container.validation.parse_fiat_amount(amount)
                 target = parse_limbo_multiplier(multiplier)
             except Exception as exc:
-                await interaction.response.send_message(**self._errors.panel_for(exc).send_kwargs(ephemeral=True))
+                await send_panel(interaction, self._errors.panel_for(exc), ephemeral=True)
                 return
             await start_limbo(
                 interaction,

@@ -13,6 +13,7 @@ from casino.domain.enums import (
     RainStatus,
     TicketStatus,
     TransactionStatus,
+    WagerRaceStatus,
     TransactionType,
     UserRole,
 )
@@ -23,12 +24,14 @@ from casino.domain.records import (
     HouseTreasuryRecord,
     JackpotRecord,
     LedgerRecord,
+    WagerRaceRecord,
     RainRecord,
     TicketRecord,
     TransactionRecord,
     UserRecord,
 )
 from casino.errors import AlreadyProcessedError, InsufficientBalanceError, InsufficientHouseReserveError, NotFoundError
+from casino.domain.wager_race import qualifying_lamports
 from casino.utils.money import SolAmount
 
 
@@ -316,7 +319,11 @@ class MemoryGameRepository:
                 continue
             if game.resolved_at is None or game.resolved_at < since:
                 continue
-            total += game.wager_for(discord_id).lamports
+            total += qualifying_lamports(
+                game.wager_for(discord_id).lamports,
+                game_type=game.game_type,
+                limbo_target=game.limbo_target,
+            )
         return total
 
     async def try_add_to_side(
@@ -923,6 +930,67 @@ class MemoryBaccaratRepository:
             ledger_ids=list(table.ledger_ids),
             player_cards=list(table.player_cards),
             banker_cards=list(table.banker_cards),
+        )
+
+
+class MemoryWagerRaceRepository:
+    def __init__(self) -> None:
+        self.items: dict[str, WagerRaceRecord] = {}
+
+    async def insert(self, race: WagerRaceRecord, session=None) -> None:
+        self.items[race.race_id] = self._clone(race)
+
+    async def find_by_id(self, race_id: str, session=None) -> WagerRaceRecord | None:
+        return self._clone(self.items.get(race_id))
+
+    async def find_open(self, guild_id: str, session=None) -> WagerRaceRecord | None:
+        for race in self.items.values():
+            if race.guild_id == guild_id and race.status is WagerRaceStatus.OPEN:
+                return self._clone(race)
+        return None
+
+    async def replace(self, race: WagerRaceRecord, session=None) -> bool:
+        current = self.items.get(race.race_id)
+        if current is None or current.version != race.version:
+            return False
+        race.version += 1
+        self.items[race.race_id] = self._clone(race)
+        return True
+
+    async def add_wager(self, race_id: str, user_id: str, lamports: int, session=None) -> WagerRaceRecord | None:
+        race = self.items.get(race_id)
+        if race is None or race.status is not WagerRaceStatus.OPEN:
+            return None
+        race.wagers_lamports[user_id] = int(race.wagers_lamports.get(user_id, 0)) + int(lamports)
+        race.version += 1
+        return self._clone(race)
+
+    async def set_listing_ref(self, race_id: str, channel_id: str, message_id: str, session=None) -> None:
+        race = self.items[race_id]
+        race.channel_id = channel_id
+        race.message_id = message_id
+
+    async def list_open(self, session=None) -> list[WagerRaceRecord]:
+        return [self._clone(race) for race in self.items.values() if race.status is WagerRaceStatus.OPEN]
+
+    async def list_due(self, now, session=None) -> list[WagerRaceRecord]:
+        return [
+            self._clone(race)
+            for race in self.items.values()
+            if race.status is WagerRaceStatus.OPEN and race.ends_at is not None and race.ends_at <= now
+        ]
+
+    def _clone(self, race: WagerRaceRecord | None) -> WagerRaceRecord | None:
+        if race is None:
+            return None
+        return replace(
+            race,
+            wagers_lamports=dict(race.wagers_lamports),
+            prize_usd=list(race.prize_usd),
+            prize_lamports=list(race.prize_lamports),
+            payouts_lamports=dict(race.payouts_lamports),
+            place_ids=list(race.place_ids),
+            ledger_ids=list(race.ledger_ids),
         )
 
 

@@ -29,6 +29,7 @@ from casino.domain.enums import (
     RainStatus,
     TicketCategory,
     TicketStatus,
+    WagerRaceStatus,
 )
 from casino.domain.records import (
     DiceRollRecord,
@@ -42,6 +43,7 @@ from casino.domain.records import (
     RainRecord,
     TicketRecord,
     TimeframeStats,
+    WagerRaceRecord,
     UserRecord,
     is_house_seat,
 )
@@ -1402,8 +1404,8 @@ class EmbedFactory:
             .field(
                 "Other",
                 "`/profile` · `/tip` · `/rain` · `/affiliate`. "
-                "Rains require a 10% wager and 10% deposit in the last 24 hours, "
-                "plus the required custom status.",
+                "Rains require a 10% wager and 10% deposit after the rain starts "
+                "(limbo counts at-risk stake), plus the required custom status.",
             )
             .build()
         )
@@ -1585,7 +1587,7 @@ class EmbedFactory:
                 description=(
                     "Set the open coinflip and dice lobbies, outcome channels, private-table categories, "
                     "the rain channel and optional rain ping, the verify channel and member role, "
-                    "jackpot, baccarat, and history channels, "
+                    "jackpot, baccarat, wager race, and history channels, "
                     "the investor role, support tickets, the provably fair panel, and admin alert channels. "
                     "Blackjack and target open in the channel where the command is used."
                 ),
@@ -1602,6 +1604,16 @@ class EmbedFactory:
             .field("Jackpot history", self._channel(config.jackpot_history_channel_id))
             .field("Baccarat", self._channel(config.baccarat_channel_id))
             .field("Baccarat history", self._channel(config.baccarat_history_channel_id))
+            .field("Wager race", self._channel(config.wager_race_channel_id))
+            .field(
+                "Race prizes",
+                (
+                    f"1st `{self._container.math.format_fiat_symbol(config.wager_race_first_usd, 'USD')}` · "
+                    f"2nd `{self._container.math.format_fiat_symbol(config.wager_race_second_usd, 'USD')}` · "
+                    f"3rd `{self._container.math.format_fiat_symbol(config.wager_race_third_usd, 'USD')}` · "
+                    f"4th/5th `{self._container.math.format_fiat_symbol(config.wager_race_fourth_fifth_usd, 'USD')}` each"
+                ),
+            )
             .field("Rain", self._channel(config.rain_channel_id))
             .field("Rain ping", self._role(config.rain_ping_role_id))
             .field("Verify", self._channel(config.verify_channel_id))
@@ -1679,6 +1691,51 @@ class EmbedFactory:
             .build()
         )
 
+    def wager_race_table(self, race: WagerRaceRecord) -> CasinoPanel:
+        math = self._container.math
+        prizes = list(race.prize_usd) + ["0"] * 5
+        labels = ("1st", "2nd", "3rd", "4th", "5th")
+        prize_lines = []
+        for index, label in enumerate(labels):
+            usd = Decimal(str(prizes[index] or "0"))
+            prize_lines.append(f"{label} `{math.format_fiat_symbol(usd, 'USD')}`")
+        ranked = race.ranked()
+        standings: list[str] = []
+        for place in range(1, 6):
+            if place <= len(ranked):
+                user_id, lamports = ranked[place - 1]
+                wagered = SolAmount.from_lamports(lamports)
+                paid = race.payouts_lamports.get(user_id)
+                payout = f" · paid `{math.format_sol(SolAmount.from_lamports(paid))} SOL`" if paid else ""
+                standings.append(
+                    f"**{place}.** {self._mention(user_id)} — `{math.format_sol(wagered)} SOL`{payout}"
+                )
+            else:
+                standings.append(f"**{place}.** —")
+        status = "Live" if race.status is WagerRaceStatus.OPEN else "Settled"
+        ends = ""
+        if race.ends_at is not None:
+            ends = (
+                f"{discord.utils.format_dt(race.ends_at, style='F')} "
+                f"({discord.utils.format_dt(race.ends_at, style='R')})"
+            )
+        return (
+            self.builder(
+                "Weekly wager race",
+                description=(
+                    f"**{status}.** Starts every Monday at 10:00 GMT. "
+                    "Prizes come from the house book and are taken from founder and investor equity "
+                    "by ownership share.\n"
+                    "Limbo only counts the amount at risk, so 1.01x spam barely moves the board."
+                ),
+            )
+            .persistent()
+            .field("Prizes", " · ".join(prize_lines))
+            .field("Standings", "\n".join(standings))
+            .field("Ends", ends or "—")
+            .build()
+        )
+
     def rain_payout(self, rain: RainRecord, share: SolAmount) -> CasinoPanel:
         math = self._container.math
         pot = math.format_fiat_symbol(rain.amount_fiat, rain.currency)
@@ -1724,7 +1781,8 @@ class EmbedFactory:
         joined: bool = False,
     ) -> CasinoPanel:
         math = self._container.math
-        needed = math.format_fiat_symbol(eligibility.required_fiat, eligibility.currency)
+        wager_needed = math.format_fiat_symbol(eligibility.wager_required_fiat, eligibility.currency)
+        deposit_needed = math.format_fiat_symbol(eligibility.deposit_required_fiat, eligibility.currency)
         wagered = math.format_fiat_symbol(eligibility.wagered_fiat, eligibility.currency)
         deposited = math.format_fiat_symbol(eligibility.deposited_fiat, eligibility.currency)
         status = RAIN_JOIN_STATUS.replace("#", "\u2060#")
@@ -1736,16 +1794,16 @@ class EmbedFactory:
             extra = "You're already in this rain."
         else:
             title = "Rain requirements"
-            extra = "Meet every requirement, then click Join again."
+            extra = "Meet every requirement after this rain started, then click Join again."
         return (
             self.builder(title, description=extra)
             .field(
                 "Wager",
-                f"{'✅' if eligibility.wager_ok else '❌'} {wagered} / {needed} in the last 24 hours",
+                f"{'✅' if eligibility.wager_ok else '❌'} {wagered} / {wager_needed} since this rain started",
             )
             .field(
                 "Deposit",
-                f"{'✅' if eligibility.deposit_ok else '❌'} {deposited} / {needed} in the last 24 hours",
+                f"{'✅' if eligibility.deposit_ok else '❌'} {deposited} / {deposit_needed} since this rain started",
             )
             .field(
                 "Status",

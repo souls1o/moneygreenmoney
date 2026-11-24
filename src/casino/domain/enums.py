@@ -52,6 +52,7 @@ class TransactionType(StrEnum):
     AFFILIATE = "affiliate"
     INVEST = "invest"
     DIVEST = "divest"
+    WAGER_RACE = "wager_race"
 
 
 class TransactionStatus(StrEnum):
@@ -74,6 +75,7 @@ class LedgerEntryType(StrEnum):
     AFFILIATE = "affiliate"
     INVEST = "invest"
     DIVEST = "divest"
+    WAGER_RACE = "wager_race"
 
 
 class UserRole(StrEnum):
@@ -111,6 +113,7 @@ class GuildConfigSlot(StrEnum):
     JACKPOT_HISTORY = "jackpot_history"
     BACCARAT = "baccarat"
     BACCARAT_HISTORY = "baccarat_history"
+    WAGER_RACE = "wager_race"
 
     def is_category(self) -> bool:
         return self in {
@@ -154,6 +157,12 @@ class BaccaratStatus(StrEnum):
     SHOWING = "showing"
     COMPLETED = "completed"
     REFUNDED = "refunded"
+
+
+class WagerRaceStatus(StrEnum):
+    OPEN = "open"
+    SETTLING = "settling"
+    COMPLETED = "completed"
 
 
 class RainStatus(StrEnum):

@@ -9,6 +9,7 @@ from casino.container import AppContainer
 from casino.discord_bot.installs import is_home_guild
 from casino.discord_bot.presentation.embeds import EmbedFactory
 from casino.discord_bot.presentation.errors import DiscordErrorPresenter
+from casino.discord_bot.presentation.interactions import send_panel
 from casino.domain.enums import CoinSide, GameMode, GameStatus, GameType
 from casino.errors import GameError
 from casino.logging.logger import LogContext
@@ -315,20 +316,25 @@ async def open_game_setup(
     amount: str,
 ) -> None:
     if interaction.channel is None:
-        await interaction.response.send_message(
-            **embeds.error("This command must be used in a channel.").send_kwargs(ephemeral=True)
+        await send_panel(
+            interaction,
+            embeds.error("This command must be used in a channel."),
+            ephemeral=True,
         )
         return
     user_id = str(interaction.user.id)
+    inline = game_type in {GameType.BLACKJACK, GameType.LIMBO}
+    if not interaction.response.is_done():
+        await interaction.response.defer(ephemeral=not inline)
     try:
         fiat = container.validation.parse_fiat_amount(amount)
         user = await container.users.get_or_create(user_id)
-        quote = await container.price.get_quote()
+        quote = await container.price.get_quote(allow_stale=True)
         currency_price = quote.sol_price(user.display_currency)
         amount_usd = fiat * quote.sol_price("USD") / currency_price
         container.validation.validate_bet(amount_usd)
     except Exception as exc:
-        await interaction.response.send_message(**errors.panel_for(exc).send_kwargs(ephemeral=True))
+        await send_panel(interaction, errors.panel_for(exc), ephemeral=True)
         return
     if game_type is GameType.BLACKJACK:
         await _start_blackjack(
@@ -366,7 +372,10 @@ async def open_game_setup(
         state,
         channel=interaction.channel if isinstance(interaction.channel, discord.abc.Messageable) else None,
     )
-    await interaction.response.send_message(view=view, ephemeral=True)
+    if interaction.response.is_done():
+        await interaction.followup.send(view=view, ephemeral=True)
+    else:
+        await interaction.response.send_message(view=view, ephemeral=True)
 
 
 async def _start_blackjack(
@@ -378,7 +387,8 @@ async def _start_blackjack(
     user_id: str,
     fiat: Decimal,
 ) -> None:
-    await interaction.response.defer()
+    if not interaction.response.is_done():
+        await interaction.response.defer()
     game_id: str | None = None
     posted = False
     with LogContext.bind(userId=user_id):

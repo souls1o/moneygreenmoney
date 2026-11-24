@@ -20,6 +20,7 @@ COLLECTION_RAINS = "rains"
 COLLECTION_TICKETS = "tickets"
 COLLECTION_JACKPOTS = "jackpots"
 COLLECTION_BACCARAT = "baccarat"
+COLLECTION_WAGER_RACES = "wager_races"
 
 
 class MongoDatabase:

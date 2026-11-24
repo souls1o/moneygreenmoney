@@ -8,6 +8,7 @@ from casino.container import AppContainer
 from casino.discord_bot.presentation.embeds import EmbedFactory
 from casino.discord_bot.presentation.errors import DiscordErrorPresenter
 from casino.discord_bot.presentation.game_setup import open_game_setup
+from casino.discord_bot.presentation.interactions import ack
 from casino.domain.enums import GameType
 
 
@@ -26,6 +27,7 @@ class CoinflipCog(commands.Cog):
     @app_commands.allowed_installs(guilds=True, users=True)
     @app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
     async def coinflip(self, interaction: discord.Interaction, amount: str) -> None:
+        await ack(interaction)
         await self._container.rate_limits.enforce(f"coinflip:{interaction.user.id}")
         await open_game_setup(
             interaction,

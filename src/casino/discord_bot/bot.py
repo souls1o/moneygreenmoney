@@ -23,9 +23,11 @@ from casino.discord_bot.cogs.support import SupportCog
 from casino.discord_bot.cogs.verification import VerificationCog
 from casino.discord_bot.presentation.admin_alerts import AdminChannelPresenter
 from casino.discord_bot.presentation.errors import DiscordErrorPresenter
+from casino.discord_bot.presentation.interactions import send_panel
 from casino.discord_bot.presentation.notifications import GameNotificationPresenter
 from casino.discord_bot.presentation.baccarat import BaccaratPresenter
 from casino.discord_bot.presentation.jackpot import JackpotPresenter
+from casino.discord_bot.presentation.wager_race import WagerRacePresenter
 from casino.discord_bot.presentation.rain import RainPresenter
 from casino.discord_bot.presentation.table import GameTablePresenter
 from casino.discord_bot.presentation.tickets import TicketPresenter
@@ -51,6 +53,7 @@ class CasinoBot(commands.Bot):
         self.rains = RainPresenter(self, container)
         self.jackpots = JackpotPresenter(self, container)
         self.baccarat_tables = BaccaratPresenter(self, container)
+        self.wager_race = WagerRacePresenter(self, container)
         self.tickets = TicketPresenter(self, container)
         container.deposits.set_listeners(
             on_credited=self.admin_alerts.on_player_deposit,
@@ -73,6 +76,10 @@ class CasinoBot(commands.Bot):
         self.container.baccarat_worker.set_listeners(
             on_settled=self.baccarat_tables.on_settled,
             on_reset=self.baccarat_tables.on_reset,
+        )
+        self.container.wager_race_worker.set_listeners(
+            on_settled=self.wager_race.on_settled,
+            on_open=self.wager_race.on_open,
         )
         await self.add_cog(BalanceCog(self, self.container))
         await self.add_cog(CoinflipCog(self, self.container))
@@ -132,6 +139,10 @@ class CasinoBot(commands.Bot):
             await self.baccarat_tables.resume()
         except Exception:
             self._logger.exception("baccarat_resume_failed")
+        try:
+            await self.wager_race.resume()
+        except Exception:
+            self._logger.exception("wager_race_resume_failed")
 
     async def on_app_command_error(
         self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError
@@ -139,7 +150,7 @@ class CasinoBot(commands.Bot):
         root = error.original if isinstance(error, discord.app_commands.CommandInvokeError) else error
         self._logger.warning("command_error", error=str(root), userId=str(interaction.user.id))
         panel = self._errors.panel_for(root)
-        if interaction.response.is_done():
-            await interaction.followup.send(**panel.send_kwargs(ephemeral=True))
-        else:
-            await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+        try:
+            await send_panel(interaction, panel, ephemeral=True)
+        except discord.HTTPException:
+            self._logger.warning("command_error_unacked", userId=str(interaction.user.id))

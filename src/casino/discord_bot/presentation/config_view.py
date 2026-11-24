@@ -415,11 +415,51 @@ def build_admin_config(
             )
         )
         builder.button(
+            "Wager race",
+            style=discord.ButtonStyle.secondary,
+            callback=_page_callback(container, embeds, 7),
+        )
+        builder.button(
             "Back",
             style=discord.ButtonStyle.secondary,
             callback=_page_callback(container, embeds, 4),
         )
+    elif page == 7:
+        builder.add_item(
+            _ConfigChannelSelect(
+                container,
+                embeds,
+                GuildConfigSlot.WAGER_RACE,
+                placeholder="Weekly wager race channel",
+                channel_types=text,
+                page=7,
+            )
+        )
+        builder.button(
+            "Set prizes",
+            style=discord.ButtonStyle.primary,
+            callback=_wager_race_prizes_callback(container, embeds),
+        )
+        builder.button(
+            "Back",
+            style=discord.ButtonStyle.secondary,
+            callback=_page_callback(container, embeds, 6),
+        )
     return builder.build()
+
+
+def _wager_race_prizes_callback(container: AppContainer, embeds: EmbedFactory):
+    async def callback(interaction: discord.Interaction) -> None:
+        if interaction.guild_id is None:
+            await interaction.response.send_message(
+                **embeds.error("Use this in a server.").send_kwargs(ephemeral=True)
+            )
+            return
+        from casino.discord_bot.presentation.modals import WagerRacePrizesModal
+
+        await interaction.response.send_modal(WagerRacePrizesModal(container, embeds, str(interaction.guild_id)))
+
+    return callback
 
 
 def _page_callback(container: AppContainer, embeds: EmbedFactory, page: int):
