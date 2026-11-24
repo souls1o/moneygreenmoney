@@ -12,7 +12,7 @@ from casino.discord_bot.presentation.errors import DiscordErrorPresenter
 from casino.discord_bot.presentation.interactions import send_panel
 from casino.domain.enums import CoinSide, GameMode, GameStatus, GameType
 from casino.errors import GameError
-from casino.logging.logger import LogContext
+from casino.logging.logger import LogContext, get_logger
 
 
 @dataclass(slots=True)
@@ -58,6 +58,15 @@ _TITLES = {
 _COINFLIP_MATCHUPS = (("2", "1v1"), ("22", "2v2"))
 _DICE_MATCHUPS = (("2", "1v1"), ("3", "1v1v1"), ("4", "1v1v1v1"), ("22", "2v2"))
 _TARGET_MATCHUPS = (("2", "1v1"), ("3", "1v1v1"), ("4", "1v1v1v1"))
+
+
+async def refund_failed_table(container: AppContainer, game_id: str | None) -> None:
+    if not game_id:
+        return
+    try:
+        await container.games.refund_unposted_game(game_id)
+    except Exception:
+        get_logger("casino.discord.games").exception("unposted_refund_failed", gameId=game_id)
 
 
 def matchup_label(value: str) -> str:
@@ -147,11 +156,8 @@ class GameSetupView(discord.ui.LayoutView):
                 )
                 await bot.tables.send_fairness_lock(interaction, refreshed)
             except Exception as exc:
-                if game_id is not None and not posted:
-                    try:
-                        await self._container.games.cancel_game(game_id, user_id, admin=True)
-                    except Exception:
-                        pass
+                if not posted:
+                    await refund_failed_table(self._container, game_id)
                 await interaction.followup.send(**self._errors.panel_for(exc).send_kwargs(ephemeral=True))
 
     async def _create_game(self, interaction: discord.Interaction):
@@ -412,11 +418,8 @@ async def _start_blackjack(
             if refreshed.status is GameStatus.COMPLETED:
                 await bot.tables.on_resolved(refreshed, interaction=interaction)
         except Exception as exc:
-            if game_id is not None and not posted:
-                try:
-                    await container.games.cancel_game(game_id, user_id, admin=True)
-                except Exception:
-                    pass
+            if not posted:
+                await refund_failed_table(container, game_id)
             await interaction.followup.send(**errors.panel_for(exc).send_kwargs(ephemeral=True))
 
 
@@ -456,11 +459,8 @@ async def start_limbo(
             if refreshed.status is GameStatus.COMPLETED:
                 await bot.tables.on_resolved(refreshed, interaction=interaction)
         except Exception as exc:
-            if game_id is not None and not posted:
-                try:
-                    await container.games.cancel_game(game_id, user_id, admin=True)
-                except Exception:
-                    pass
+            if not posted:
+                await refund_failed_table(container, game_id)
             await interaction.followup.send(**errors.panel_for(exc).send_kwargs(ephemeral=True))
 
 
@@ -500,9 +500,6 @@ async def start_mines(
             if refreshed.status is GameStatus.COMPLETED:
                 await bot.tables.on_resolved(refreshed, interaction=interaction)
         except Exception as exc:
-            if game_id is not None and not posted:
-                try:
-                    await container.games.cancel_game(game_id, user_id, admin=True)
-                except Exception:
-                    pass
+            if not posted:
+                await refund_failed_table(container, game_id)
             await interaction.followup.send(**errors.panel_for(exc).send_kwargs(ephemeral=True))

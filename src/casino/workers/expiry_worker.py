@@ -23,6 +23,12 @@ class GameExpiryWorker:
         self._on_channel_idle = listener
 
     async def tick(self) -> None:
+        try:
+            reclaimed = await self._games.reclaim_unposted_games()
+            if reclaimed:
+                self._logger.info("unposted_games_refunded", count=len(reclaimed))
+        except Exception:
+            self._logger.exception("unposted_reclaim_tick_failed")
         flipped = await self._games.auto_flip_due_games()
         if flipped:
             self._logger.info("games_auto_flipped", count=len(flipped))

@@ -26,6 +26,7 @@ from casino.utils.money import SolAmount
 
 
 HOUSE_USER_ID = "HOUSE"
+UNPOSTED_RECLAIM_MARK = "reclaimed"
 
 
 def is_house_seat(player_id: str) -> bool:
@@ -448,6 +449,11 @@ class GameRecord:
 
     def record_wager(self, player_id: str, lamports: int) -> None:
         self.player_wager_lamports[player_id] = lamports
+
+    def has_discord_listing(self) -> bool:
+        message_id = (self.message_id or "").strip()
+        private_id = (self.private_message_id or "").strip()
+        return bool(message_id or private_id)
 
     def player_profit_fiat(self, player_id: str) -> Decimal:
         stake = self.stake_usd()

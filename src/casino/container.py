@@ -124,6 +124,12 @@ class AppContainer:
             await self.deposits.sync_house_wallet()
         except Exception:
             get_logger("casino.app").exception("house_wallet_startup_sync_failed")
+        try:
+            restored = await self.games.reclaim_unposted_games(grace_seconds=0)
+            if restored:
+                logger.info("startup_unposted_games_refunded", count=len(restored))
+        except Exception:
+            logger.exception("startup_unposted_reclaim_failed")
         self.workers.start(
             "game-expiry",
             self.settings.expiry_poll_interval_seconds,

@@ -23,6 +23,7 @@ from casino.domain.records import (
     DiceTurnEvent,
     GameRecord,
     HOUSE_USER_ID,
+    UNPOSTED_RECLAIM_MARK,
     BaccaratRecord,
     JackpotRecord,
     PlayerProfileStats,
@@ -555,6 +556,130 @@ class GameService:
                 if not replaced:
                     raise GameError("The game could not be refunded due to a concurrent change.")
             self._logger.info("vs_house_aborted", reason=reason)
+        return current
+
+    async def refund_unposted_game(self, game_id: str, *, reason: str = "Game never posted") -> GameRecord:
+        game = await self.get(game_id)
+        return await self._reclaim_unposted(game, reason)
+
+    async def reclaim_unposted_games(self, *, grace_seconds: int = 20, limit: int = 50) -> list[GameRecord]:
+        cutoff = self._clock.now() - timedelta(seconds=max(grace_seconds, 0))
+        found = await self._games.list_unposted(cutoff, limit=limit)
+        restored: list[GameRecord] = []
+        for game in found:
+            try:
+                restored.append(await self._reclaim_unposted(game, "Unposted game refund"))
+            except Exception:
+                self._logger.exception("unposted_reclaim_failed", gameId=game.game_id)
+        if restored:
+            self._logger.info("unposted_games_reclaimed", count=len(restored))
+        return restored
+
+    async def _reclaim_unposted(self, game: GameRecord, reason: str) -> GameRecord:
+        if game.has_discord_listing():
+            return game
+        if game.status in {GameStatus.CANCELLED, GameStatus.EXPIRED}:
+            return game
+        if game.status is GameStatus.PENDING:
+            return await self._refund_open_game(game, GameStatus.CANCELLED, reason)
+        if game.status is GameStatus.ACTIVE:
+            if game.is_vs_house():
+                return await self.abort_unresolved_vs_house(game.game_id, reason=reason)
+            return await self._void_unsettled_game(game, reason)
+        if game.status is GameStatus.COMPLETED:
+            return await self._refund_unposted_completed(game, reason)
+        return game
+
+    async def _void_unsettled_game(self, game: GameRecord, reason: str) -> GameRecord:
+        quote = await self._prices.get_quote(allow_stale=True)
+        usd_price = quote.sol_price("USD")
+        now = self._clock.now()
+        with LogContext.bind(userId=game.creator_id, gameId=game.game_id):
+            async with self._uow.begin() as uow:
+                current = await self._games.find_by_id(game.game_id, session=uow.session)
+                if current is None:
+                    raise NotFoundError("That game was not found.")
+                if current.has_discord_listing() or current.status in {
+                    GameStatus.COMPLETED,
+                    GameStatus.CANCELLED,
+                    GameStatus.EXPIRED,
+                }:
+                    return current
+                for player_id in current.human_player_ids():
+                    stake = current.wager_for(player_id)
+                    if stake.is_zero():
+                        continue
+                    mutation = await self._balances.credit(
+                        user_id=player_id,
+                        amount=stake,
+                        entry_type=LedgerEntryType.REFUND,
+                        transaction_type=TransactionType.REFUND,
+                        price_usd=usd_price,
+                        description=f"{reason} {current.game_id}",
+                        game_id=current.game_id,
+                        session=uow.session,
+                    )
+                    current.ledger_ids.append(mutation.ledger_entry.entry_id)
+                current = await self._refund_house_seats(current, usd_price, reason, session=uow.session)
+                current.status = GameStatus.CANCELLED
+                current.resolved_at = now
+                current.expires_at = None
+                current.message_id = UNPOSTED_RECLAIM_MARK
+                replaced = await self._games.replace(current, session=uow.session)
+                if not replaced:
+                    raise GameError("The game could not be refunded due to a concurrent change.")
+            self._logger.info("unposted_game_voided", reason=reason)
+        return current
+
+    async def _refund_unposted_completed(self, game: GameRecord, reason: str) -> GameRecord:
+        quote = await self._prices.get_quote(allow_stale=True)
+        usd_price = quote.sol_price("USD")
+        with LogContext.bind(userId=game.creator_id, gameId=game.game_id):
+            async with self._uow.begin() as uow:
+                current = await self._games.find_by_id(game.game_id, session=uow.session)
+                if current is None:
+                    raise NotFoundError("That game was not found.")
+                if current.has_discord_listing() or current.status is not GameStatus.COMPLETED:
+                    return current
+                if current.is_vs_house():
+                    for player_id in current.human_player_ids():
+                        loss = -current.player_profit_lamports(player_id)
+                        if loss <= 0:
+                            continue
+                        amount = SolAmount.from_lamports(loss)
+                        try:
+                            _treasury, house_take = await self._balances.debit_house_reserve(
+                                amount=amount,
+                                entry_type=LedgerEntryType.REFUND,
+                                transaction_type=TransactionType.REFUND,
+                                price_usd=usd_price,
+                                description=f"{reason} house {current.game_id}",
+                                game_id=current.game_id,
+                                session=uow.session,
+                            )
+                            current.ledger_ids.append(house_take.entry_id)
+                        except InsufficientHouseReserveError:
+                            self._logger.warning(
+                                "unposted_refund_house_short",
+                                gameId=current.game_id,
+                                lamports=loss,
+                            )
+                        mutation = await self._balances.credit(
+                            user_id=player_id,
+                            amount=amount,
+                            entry_type=LedgerEntryType.REFUND,
+                            transaction_type=TransactionType.REFUND,
+                            price_usd=usd_price,
+                            description=f"{reason} {current.game_id}",
+                            game_id=current.game_id,
+                            session=uow.session,
+                        )
+                        current.ledger_ids.append(mutation.ledger_entry.entry_id)
+                current.message_id = UNPOSTED_RECLAIM_MARK
+                replaced = await self._games.replace(current, session=uow.session)
+                if not replaced:
+                    raise GameError("The game could not be refunded due to a concurrent change.")
+            self._logger.info("unposted_completed_refunded", reason=reason)
         return current
 
     async def leave_game(self, game_id: str, player_id: str) -> GameRecord:

@@ -945,3 +945,67 @@ async def test_coinflip_does_not_credit_balances_until_finalize() -> None:
     assert loser.sol_balance_lamports == 10_000_000_000 - 50_000_000
     assert winner.games_played == 1
     assert winner.games_won == 1
+
+
+@pytest.mark.asyncio
+async def test_reclaim_refunds_unposted_pending_wager() -> None:
+    harness = GameHarness()
+    harness.seed_user("1", "10")
+    game = await harness.service.create_game(player1_id="1", fiat_amount=Decimal("5"), side=CoinSide.HEADS)
+    assert harness.users_repo.users["1"].sol_balance_lamports == 10_000_000_000 - 50_000_000
+    restored = await harness.service.reclaim_unposted_games(grace_seconds=0)
+    assert len(restored) == 1
+    assert restored[0].status is GameStatus.CANCELLED
+    assert harness.users_repo.users["1"].sol_balance_lamports == 10_000_000_000
+
+
+@pytest.mark.asyncio
+async def test_reclaim_refunds_unposted_limbo_loss_and_is_idempotent() -> None:
+    harness = GameHarness()
+    harness.service._rng = FixedRandomService(CoinSide.HEADS, limbos=[Decimal("1.50")])
+    harness.house_repo.record.sol_balance_lamports = 5_000_000_000
+    harness.seed_user("1", "10")
+    game = await harness.service.create_game(
+        player1_id="1",
+        fiat_amount=Decimal("5"),
+        side=CoinSide.HEADS,
+        game_type=GameType.LIMBO,
+        limbo_target=Decimal("2"),
+    )
+    assert game.status is GameStatus.COMPLETED
+    assert harness.users_repo.users["1"].sol_balance_lamports == 10_000_000_000 - 50_000_000
+    first = await harness.service.refund_unposted_game(game.game_id)
+    assert first.message_id == "reclaimed"
+    assert harness.users_repo.users["1"].sol_balance_lamports == 10_000_000_000
+    assert harness.house_repo.record.sol_balance_lamports == 5_000_000_000
+    await harness.service.refund_unposted_game(game.game_id)
+    assert harness.users_repo.users["1"].sol_balance_lamports == 10_000_000_000
+
+
+@pytest.mark.asyncio
+async def test_reclaim_does_not_take_back_unposted_limbo_win() -> None:
+    harness = GameHarness()
+    harness.service._rng = FixedRandomService(CoinSide.HEADS, limbos=[Decimal("2.50")])
+    harness.house_repo.record.sol_balance_lamports = 5_000_000_000
+    harness.seed_user("1", "10")
+    game = await harness.service.create_game(
+        player1_id="1",
+        fiat_amount=Decimal("5"),
+        side=CoinSide.HEADS,
+        game_type=GameType.LIMBO,
+        limbo_target=Decimal("2"),
+    )
+    after_win = harness.users_repo.users["1"].sol_balance_lamports
+    await harness.service.refund_unposted_game(game.game_id)
+    assert harness.users_repo.users["1"].sol_balance_lamports == after_win
+
+
+@pytest.mark.asyncio
+async def test_reclaim_skips_games_that_posted_to_discord() -> None:
+    harness = GameHarness()
+    harness.seed_user("1", "10")
+    game = await harness.service.create_game(player1_id="1", fiat_amount=Decimal("5"), side=CoinSide.HEADS)
+    await harness.service.attach_listing(game.game_id, "chan", "msg")
+    restored = await harness.service.reclaim_unposted_games(grace_seconds=0)
+    assert restored == []
+    assert harness.users_repo.users["1"].sol_balance_lamports == 10_000_000_000 - 50_000_000

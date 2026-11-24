@@ -67,6 +67,41 @@ class GameRepository(MongoRepository):
             )
         return total
 
+    async def list_unposted(self, created_before: datetime, limit: int = 50) -> list[GameRecord]:
+        missing_listing = {
+            "$or": [{"messageId": {"$exists": False}}, {"messageId": None}, {"messageId": ""}],
+        }
+        missing_private = {
+            "$or": [
+                {"privateMessageId": {"$exists": False}},
+                {"privateMessageId": None},
+                {"privateMessageId": ""},
+            ],
+        }
+        cursor = (
+            self.collection.find(
+                {
+                    "$and": [
+                        missing_listing,
+                        missing_private,
+                        {
+                            "status": {
+                                "$in": [
+                                    GameStatus.PENDING.value,
+                                    GameStatus.ACTIVE.value,
+                                    GameStatus.COMPLETED.value,
+                                ]
+                            }
+                        },
+                        {"createdAt": {"$lte": created_before}},
+                    ]
+                }
+            )
+            .sort("createdAt", 1)
+            .limit(limit)
+        )
+        return [self._mapper.game_from_document(doc) async for doc in cursor]
+
     async def list_open(self, limit: int = 20) -> list[GameRecord]:
         cursor = (
             self.collection.find({"status": {"$in": [GameStatus.PENDING.value, GameStatus.ACTIVE.value]}})

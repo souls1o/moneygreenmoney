@@ -45,6 +45,12 @@ class GameTablePresenter:
         self._logger = get_logger("casino.discord.table")
         self._dice_locks: dict[str, asyncio.Lock] = {}
 
+    async def _refund_unposted(self, game_id: str, reason: str) -> None:
+        try:
+            await self._container.games.refund_unposted_game(game_id, reason=reason)
+        except Exception:
+            self._logger.exception("unposted_refund_failed", gameId=game_id)
+
     async def provision(self, game: GameRecord, creator: discord.abc.User) -> GameRecord:
         listing_channel = await self._open_games_destination(game)
         if listing_channel is None:
@@ -287,9 +293,7 @@ class GameTablePresenter:
                 source, panel, interaction=interaction, table_message=table_message
             )
             if not posted:
-                await self._container.games.abort_unresolved_vs_house(
-                    game.game_id, reason="Blackjack table update failed"
-                )
+                await self._refund_unposted(game.game_id, "Blackjack table update failed")
                 raise GameError("Could not update the blackjack table. Your bet was returned.")
             channel_id = source.channel_id
             message_id = source.message_id
@@ -307,12 +311,7 @@ class GameTablePresenter:
             raise
         except Exception:
             if not posted:
-                try:
-                    await self._container.games.abort_unresolved_vs_house(
-                        game.game_id, reason="Blackjack redeal failed"
-                    )
-                except Exception:
-                    self._logger.exception("blackjack_redeal_abort_failed", gameId=game.game_id)
+                await self._refund_unposted(game.game_id, "Blackjack redeal failed")
             raise
 
     async def handle_limbo_redeal(
@@ -345,24 +344,37 @@ class GameTablePresenter:
             guild_id=source.guild_id,
             limbo_target=target,
         )
-        if source.guild_id:
-            await self._container.games.attach_guild(game.game_id, source.guild_id)
-        panel = await self._embeds.limbo_panel(game, crash_value=LIMBO_START, reveal=False)
-        await self._edit_redeal_table(source, panel, interaction=interaction, table_message=table_message)
-        channel_id = source.channel_id
-        message_id = source.message_id
-        if table_message is not None:
-            channel_id = str(table_message.channel.id)
-            message_id = str(table_message.id)
-        if channel_id and message_id:
-            await self._container.games.attach_listing(game.game_id, channel_id, message_id)
-            game.channel_id = channel_id
-            game.message_id = message_id
-        if game.status is GameStatus.COMPLETED:
-            await self.on_resolved(game, interaction=interaction)
-        if interaction is not None:
-            await self.send_fairness_lock(interaction, game)
-        return game
+        posted = False
+        try:
+            if source.guild_id:
+                await self._container.games.attach_guild(game.game_id, source.guild_id)
+            panel = await self._embeds.limbo_panel(game, crash_value=LIMBO_START, reveal=False)
+            posted = await self._edit_redeal_table(
+                source, panel, interaction=interaction, table_message=table_message
+            )
+            if not posted:
+                await self._refund_unposted(game.game_id, "Limbo table update failed")
+                raise GameError("Could not update the limbo table. Your bet was returned.")
+            channel_id = source.channel_id
+            message_id = source.message_id
+            if table_message is not None:
+                channel_id = str(table_message.channel.id)
+                message_id = str(table_message.id)
+            if channel_id and message_id:
+                await self._container.games.attach_listing(game.game_id, channel_id, message_id)
+                game.channel_id = channel_id
+                game.message_id = message_id
+            if game.status is GameStatus.COMPLETED:
+                await self.on_resolved(game, interaction=interaction)
+            if interaction is not None:
+                await self.send_fairness_lock(interaction, game)
+            return game
+        except GameError:
+            raise
+        except Exception:
+            if not posted:
+                await self._refund_unposted(game.game_id, "Limbo redeal failed")
+            raise
 
     async def handle_mines_redeal(
         self,
@@ -394,24 +406,37 @@ class GameTablePresenter:
             guild_id=source.guild_id,
             mines_count=mines,
         )
-        if source.guild_id:
-            await self._container.games.attach_guild(game.game_id, source.guild_id)
-        panel = await self._embeds.mines_panel(game)
-        await self._edit_redeal_table(source, panel, interaction=interaction, table_message=table_message)
-        channel_id = source.channel_id
-        message_id = source.message_id
-        if table_message is not None:
-            channel_id = str(table_message.channel.id)
-            message_id = str(table_message.id)
-        if channel_id and message_id:
-            await self._container.games.attach_listing(game.game_id, channel_id, message_id)
-            game.channel_id = channel_id
-            game.message_id = message_id
-        if game.status is GameStatus.COMPLETED:
-            await self.on_resolved(game, interaction=interaction)
-        if interaction is not None:
-            await self.send_fairness_lock(interaction, game)
-        return game
+        posted = False
+        try:
+            if source.guild_id:
+                await self._container.games.attach_guild(game.game_id, source.guild_id)
+            panel = await self._embeds.mines_panel(game)
+            posted = await self._edit_redeal_table(
+                source, panel, interaction=interaction, table_message=table_message
+            )
+            if not posted:
+                await self._refund_unposted(game.game_id, "Mines table update failed")
+                raise GameError("Could not update the mines table. Your bet was returned.")
+            channel_id = source.channel_id
+            message_id = source.message_id
+            if table_message is not None:
+                channel_id = str(table_message.channel.id)
+                message_id = str(table_message.id)
+            if channel_id and message_id:
+                await self._container.games.attach_listing(game.game_id, channel_id, message_id)
+                game.channel_id = channel_id
+                game.message_id = message_id
+            if game.status is GameStatus.COMPLETED:
+                await self.on_resolved(game, interaction=interaction)
+            if interaction is not None:
+                await self.send_fairness_lock(interaction, game)
+            return game
+        except GameError:
+            raise
+        except Exception:
+            if not posted:
+                await self._refund_unposted(game.game_id, "Mines redeal failed")
+            raise
 
     async def _animate_blackjack_dealer(
         self,

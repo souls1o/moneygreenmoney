@@ -371,6 +371,18 @@ class MemoryGameRepository:
         matches.sort(key=lambda game: game.resolved_at or game.created_at or datetime.min, reverse=True)
         return matches[:limit]
 
+    async def list_unposted(self, created_before: datetime, limit: int = 50) -> list[GameRecord]:
+        matches = [
+            self._clone(game)
+            for game in self.games.values()
+            if not game.has_discord_listing()
+            and game.status in {GameStatus.PENDING, GameStatus.ACTIVE, GameStatus.COMPLETED}
+            and game.created_at is not None
+            and game.created_at <= created_before
+        ]
+        matches.sort(key=lambda game: game.created_at or datetime.min)
+        return matches[:limit]
+
     async def list_open(self, limit: int = 20) -> list[GameRecord]:
         matches = [
             self._clone(game)
