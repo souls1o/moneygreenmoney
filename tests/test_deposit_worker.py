@@ -30,6 +30,7 @@ async def test_deposit_worker_stops_and_backs_off_after_rpc_failure() -> None:
         ),
         sync_house_wallet=AsyncMock(return_value=None),
         sweep_target=AsyncMock(return_value=None),
+        recover_swept_deposit=AsyncMock(return_value=None),
     )
     rpc = SimpleNamespace(is_configured=True, get_signatures=get_signatures)
     cursors = SimpleNamespace(get=AsyncMock(return_value=None))
@@ -58,6 +59,7 @@ async def test_deposit_worker_round_robins_wallets() -> None:
         watch_targets=AsyncMock(return_value=users),
         sync_house_wallet=AsyncMock(return_value=None),
         sweep_target=AsyncMock(return_value=None),
+        recover_swept_deposit=AsyncMock(return_value=None),
     )
     rpc = SimpleNamespace(is_configured=True, get_signatures=get_signatures)
     cursors = SimpleNamespace(get=AsyncMock(return_value=None), set=AsyncMock())
@@ -83,6 +85,7 @@ async def test_deposit_worker_skips_known_signatures_without_tx_fetch() -> None:
         ingest_signature=ingest_signature,
         sync_house_wallet=AsyncMock(return_value=None),
         sweep_target=AsyncMock(return_value=None),
+        recover_swept_deposit=AsyncMock(return_value=None),
     )
 
     async def get_signatures(*_args, **_kwargs):
@@ -112,6 +115,7 @@ async def test_deposit_worker_does_not_skip_pending_transaction() -> None:
         ingest_signature=ingest_signature,
         sync_house_wallet=AsyncMock(return_value=None),
         sweep_target=AsyncMock(return_value=None),
+        recover_swept_deposit=AsyncMock(return_value=None),
     )
 
     async def get_signatures(*_args, **_kwargs):
@@ -140,6 +144,7 @@ async def test_deposit_worker_reprocesses_tip_even_if_cursor_advanced() -> None:
         ingest_signature=ingest_signature,
         sync_house_wallet=AsyncMock(return_value=None),
         sweep_target=AsyncMock(return_value=None),
+        recover_swept_deposit=AsyncMock(return_value=None),
     )
 
     async def get_signatures(*_args, until=None, **_kwargs):
@@ -168,6 +173,7 @@ async def test_deposit_worker_sweeps_house_when_there_are_no_new_signatures() ->
         ),
         sync_house_wallet=AsyncMock(return_value="sweep-sig"),
         sweep_target=AsyncMock(return_value=None),
+        recover_swept_deposit=AsyncMock(return_value=None),
     )
 
     async def get_signatures(*_args, **_kwargs):
@@ -191,6 +197,7 @@ async def test_deposit_worker_sweeps_user_when_there_are_no_new_signatures() -> 
         watch_targets=AsyncMock(return_value=[target]),
         sync_house_wallet=AsyncMock(return_value=None),
         sweep_target=AsyncMock(return_value=None),
+        recover_swept_deposit=AsyncMock(return_value=None),
     )
 
     async def get_signatures(*_args, **_kwargs):

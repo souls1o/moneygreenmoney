@@ -173,3 +173,20 @@ class TestSolanaDepositParser:
         assert parsed is not None
         assert parsed.lamports == 1_000_000
 
+    def test_parses_helius_native_transfers(self) -> None:
+        parser = SolanaDepositParser()
+        destination = "Dest11111111111111111111111111111111111111"
+        payload = {
+            "nativeTransfers": [
+                {
+                    "fromUserAccount": "Sender111111111111111111111111111111111111",
+                    "toUserAccount": destination,
+                    "amount": 3_000_000,
+                }
+            ]
+        }
+        parsed = parser.parse(payload, destination=destination, signature="sig")
+        assert parsed is not None
+        assert parsed.lamports == 3_000_000
+        assert parsed.source == "Sender111111111111111111111111111111111111"
+

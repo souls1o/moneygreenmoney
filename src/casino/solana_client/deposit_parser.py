@@ -81,6 +81,9 @@ class SolanaDepositParser:
                 )
         if from_ix is not None:
             return from_ix
+        walked = self._from_native_payload(payload, destination, signature)
+        if walked is not None:
+            return walked
         if dest_index is not None:
             if dest_index < len(pre) and dest_index < len(post):
                 return None
@@ -100,6 +103,42 @@ class SolanaDepositParser:
             keys.extend(self._account_keys(loaded.get("writable") or []))
             keys.extend(self._account_keys(loaded.get("readonly") or []))
         return [_norm_pubkey(key) or key for key in keys if key]
+
+    def _from_native_payload(
+        self,
+        payload: dict[str, Any],
+        destination: str,
+        signature: str,
+    ) -> ParsedIncomingTransfer | None:
+        total = 0
+        source: str | None = None
+        for item in _walk_dicts(payload):
+            dest = _norm_pubkey(
+                str(item.get("toUserAccount") or item.get("destination") or item.get("newAccount") or item.get("new_account") or "")
+            )
+            if dest != destination:
+                continue
+            if "lamports" not in item and "amount" not in item:
+                continue
+            kind = str(item.get("type") or "")
+            if kind and kind not in SYSTEM_TRANSFER_TYPES and "toUserAccount" not in item:
+                continue
+            amount = _int(item.get("lamports") if item.get("lamports") is not None else item.get("amount"))
+            if amount <= 0:
+                continue
+            total += amount
+            source = (
+                _norm_pubkey(str(item.get("fromUserAccount") or item.get("source") or "")) or source
+            )
+        if total <= 0:
+            return None
+        return ParsedIncomingTransfer(
+            signature=signature,
+            lamports=total,
+            destination=destination,
+            source=source,
+            memo=None,
+        )
 
     def _from_system_instructions(
         self,
@@ -325,6 +364,12 @@ def _b58decode(text: str) -> bytes:
     return b"\x00" * pad + body
 
 
+def same_pubkey(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    return (_norm_pubkey(left) or left.strip()) == (_norm_pubkey(right) or right.strip())
+
+
 def _norm_pubkey(value: str) -> str:
     text = (value or "").strip()
     if not text:
@@ -333,6 +378,19 @@ def _norm_pubkey(value: str) -> str:
         return str(Pubkey.from_string(text))
     except Exception:
         return text
+
+
+def _walk_dicts(payload: object) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    stack: list[object] = [payload]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            found.append(current)
+            stack.extend(current.values())
+        elif isinstance(current, list):
+            stack.extend(current)
+    return found
 
 
 def _unwrap_payload(payload: dict[str, Any]) -> dict[str, Any]:

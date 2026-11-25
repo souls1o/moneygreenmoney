@@ -58,7 +58,7 @@ class DepositMonitorWorker:
                     await asyncio.sleep(self._rpc_gap)
                 await self._tick_target(target)
             self._schedule_house_sync()
-        except (SolanaRpcException, SolanaRpcUnavailableError, TypeError, AttributeError) as exc:
+        except (SolanaRpcException, SolanaRpcUnavailableError) as exc:
             self._cooldown_until = now + RPC_BACKOFF
             cause = getattr(exc, "__cause__", None)
             self._logger.warning(
@@ -113,6 +113,15 @@ class DepositMonitorWorker:
                     break
             if last_complete is not None:
                 await self._cursors.set(cursor_name, last_complete, self._clock.now())
+        if not target.is_house:
+            recovered = await self._deposits.recover_swept_deposit(target)
+            if recovered is not None:
+                self._logger.info(
+                    "deposit_auto_credited",
+                    txSignature="recovered",
+                    userId=recovered.discord_id,
+                    address=target.address,
+                )
         if caught_up:
             await self._deposits.sweep_target(target)
 

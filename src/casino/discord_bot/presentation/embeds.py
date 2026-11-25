@@ -1644,8 +1644,6 @@ class EmbedFactory:
             .field(
                 "Other",
                 "`/profile` · `/tip` · `/rain` · `/affiliate`. "
-                "Rains require a 10% wager and 10% deposit after the rain starts, "
-                "plus the required custom status.",
             )
             .build()
         )

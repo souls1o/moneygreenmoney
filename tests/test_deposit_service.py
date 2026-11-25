@@ -48,6 +48,12 @@ class StubRpc:
     async def collect_user_into_super(self, discord_id: str) -> str | None:
         return await self.sweep_to_super(self.player_keypair(discord_id))
 
+    async def get_signatures(self, address: str | None = None, **_kwargs) -> list[str]:
+        return []
+
+    async def get_balance(self, address: str) -> int:
+        return 0
+
     def player_keypair(self, discord_id: str):
         return f"player-{discord_id}"
 
@@ -299,3 +305,50 @@ async def test_deposit_notifies_credit_listener() -> None:
     await service.credit_parsed(user, parsed)
     await asyncio.gather(*list(service._sweep_tasks), return_exceptions=True)
     assert seen == [("1", "sig-listen")]
+
+
+@pytest.mark.asyncio
+async def test_recover_credits_player_after_sweep_when_incoming_did_not_parse() -> None:
+    service, users_repo, _house, ledger_repo, rpc, clock = _service()
+    user = UserRecord(
+        discord_id="1",
+        deposit_memo="BBTEST",
+        deposit_address="Player111111111111111111111111111111111111",
+        created_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    users_repo.users["1"] = user
+    payloads = {
+        "sig-deposit": {"meta": {"err": None}},
+        "sig-sweep": {
+            "meta": {
+                "err": None,
+                "preBalances": [2_000_000_000, 1_000_000],
+                "postBalances": [5_000, 2_000_995_000],
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [user.deposit_address, rpc.super_address],
+                    "instructions": [],
+                }
+            },
+        },
+    }
+
+    async def get_parsed_transaction(signature: str, **_kwargs):
+        return payloads.get(signature)
+
+    async def get_signatures(_address: str | None = None, **_kwargs):
+        return ["sig-sweep", "sig-deposit"]
+
+    service._rpc.get_parsed_transaction = get_parsed_transaction  # type: ignore[method-assign]
+    service._rpc.get_signatures = get_signatures  # type: ignore[method-assign]
+    service._parser = SolanaDepositParser()
+    credited = await service.recover_swept_deposit(
+        DepositWatchTarget(address=user.deposit_address or "", user_id="1")
+    )
+    assert credited is not None
+    assert credited.sol_balance_lamports == 1_999_995_000
+    deposits = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.DEPOSIT]
+    assert len(deposits) == 1
+

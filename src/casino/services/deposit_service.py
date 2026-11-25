@@ -20,6 +20,7 @@ from casino.solana_client.deposit_parser import (
     IncompleteDepositTransaction,
     ParsedIncomingTransfer,
     SolanaDepositParser,
+    same_pubkey,
 )
 from casino.solana_client.rpc import SolanaRpcGateway
 from casino.utils.text import TextNormalizer
@@ -108,7 +109,7 @@ class DepositService:
         parsed = await self._incoming_or_pending(signature, target.address)
         if parsed is None:
             return None
-        if self._is_internal_transfer(parsed):
+        if target.is_house and self._is_internal_transfer(parsed):
             self._logger.info(
                 "internal_transfer_ignored",
                 txSignature=parsed.signature,
@@ -248,6 +249,68 @@ class DepositService:
             return
         if target.user_id:
             await self.sweep_user(target.user_id)
+
+    async def recover_swept_deposit(self, target: DepositWatchTarget) -> UserRecord | None:
+        """Credit a player if SOL already left their deposit address for the super wallet."""
+        if target.is_house or not target.user_id:
+            return None
+        super_addr = self.super_address()
+        if not super_addr:
+            return None
+        try:
+            signatures = await self._rpc.get_signatures(target.address, limit=25)
+        except TypeError:
+            signatures = await self._rpc.get_signatures(target.address)
+        if not signatures:
+            return None
+        user = await self._users.get_by_deposit_address(target.address) or await self._users.get(target.user_id)
+        if user is None:
+            return None
+        leftover = 0
+        try:
+            leftover = int(await self._rpc.get_balance(target.address))
+        except Exception:
+            leftover = 0
+        for signature in signatures:
+            existing = await self._transactions.find_by_signature(signature)
+            if existing is not None:
+                continue
+            try:
+                swept = await self._incoming_or_pending(signature, super_addr)
+            except DepositTransactionPendingError:
+                continue
+            if swept is None or not same_pubkey(swept.source, target.address):
+                continue
+            deposit_sig = signature
+            for other in reversed(signatures):
+                if other == signature:
+                    continue
+                if await self._transactions.find_by_signature(other) is None:
+                    deposit_sig = other
+                    break
+            recovered = ParsedIncomingTransfer(
+                signature=deposit_sig,
+                lamports=max(int(swept.lamports) + max(leftover, 0), 0),
+                destination=target.address,
+                source=swept.source,
+                memo=None,
+            )
+            if recovered.amount.is_zero():
+                continue
+            try:
+                credited = await self.credit_parsed(user, recovered)
+            except AlreadyProcessedError:
+                return user
+            self._logger.info(
+                "deposit_recovered_from_sweep",
+                txSignature=deposit_sig,
+                sweepSignature=signature,
+                amountLamports=recovered.lamports,
+                userId=user.discord_id,
+            )
+            self._schedule_sweep(target)
+            return credited
+        return None
 
     def _is_internal_transfer(self, parsed: ParsedIncomingTransfer) -> bool:
         source = (parsed.source or "").strip()
