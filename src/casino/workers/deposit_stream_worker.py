@@ -87,10 +87,6 @@ class DepositStreamWorker:
                 address=address,
                 error=str(last_error),
             )
-            try:
-                await self._deposits.sweep_target(target)
-            except Exception:
-                self._logger.exception("deposit_stream_sweep_failed", address=address)
 
     async def _run_session(self) -> None:
         url = self._settings.resolved_solana_ws_url()

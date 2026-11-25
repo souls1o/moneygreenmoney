@@ -107,7 +107,6 @@ class DepositService:
             return None
         parsed = await self._incoming_or_pending(signature, target.address)
         if parsed is None:
-            self._schedule_sweep(target)
             return None
         if self._is_internal_transfer(parsed):
             self._logger.info(
@@ -117,7 +116,6 @@ class DepositService:
                 destination=parsed.destination,
                 amountLamports=parsed.lamports,
             )
-            self._schedule_sweep(target)
             return None
         if target.is_house:
             await self.credit_house(parsed)
@@ -131,7 +129,6 @@ class DepositService:
                 address=target.address,
                 txSignature=parsed.signature,
             )
-            self._schedule_sweep(target)
             return None
         try:
             credited = await self.credit_parsed(user, parsed)
@@ -267,28 +264,45 @@ class DepositService:
         return self._parser.parse(payload, destination=destination, signature=signature)
 
     async def _incoming_or_pending(self, signature: str, destination: str) -> ParsedIncomingTransfer | None:
-        payload = await self._fetch_parsed_transaction(signature)
-        if payload is None:
+        last_incomplete: IncompleteDepositTransaction | None = None
+        saw_payload = False
+        for encoding in ("jsonParsed", "json"):
+            payload = await self._fetch_parsed_transaction(signature, encoding=encoding)
+            if payload is None:
+                continue
+            saw_payload = True
+            try:
+                parsed = self._parser.parse(payload, destination=destination, signature=signature)
+            except IncompleteDepositTransaction as exc:
+                last_incomplete = exc
+                continue
+            if parsed is not None:
+                return parsed
+        if last_incomplete is not None:
+            self._logger.info("deposit_transaction_incomplete", txSignature=signature, address=destination)
+            raise DepositTransactionPendingError(signature) from last_incomplete
+        if not saw_payload:
             self._logger.info("deposit_transaction_pending", txSignature=signature, address=destination)
             raise DepositTransactionPendingError(signature)
-        try:
-            return self._parser.parse(payload, destination=destination, signature=signature)
-        except IncompleteDepositTransaction as exc:
-            self._logger.info("deposit_transaction_incomplete", txSignature=signature, address=destination)
-            raise DepositTransactionPendingError(signature) from exc
+        return None
 
-    async def _fetch_parsed_transaction(self, signature: str) -> dict | None:
+    async def _fetch_parsed_transaction(self, signature: str, *, encoding: str = "jsonParsed") -> dict | None:
         for commitment in (Processed, Confirmed, Finalized):
-            payload = await self._rpc_parsed_transaction(signature, commitment)
+            payload = await self._rpc_parsed_transaction(signature, commitment, encoding)
             if payload is not None:
                 return payload
         return None
 
-    async def _rpc_parsed_transaction(self, signature: str, commitment) -> dict | None:
+    async def _rpc_parsed_transaction(self, signature: str, commitment, encoding: str) -> dict | None:
         try:
-            return await self._rpc.get_parsed_transaction(signature, commitment=commitment)
+            return await self._rpc.get_parsed_transaction(
+                signature, commitment=commitment, encoding=encoding
+            )
         except TypeError:
-            return await self._rpc.get_parsed_transaction(signature)
+            try:
+                return await self._rpc.get_parsed_transaction(signature, commitment=commitment)
+            except TypeError:
+                return await self._rpc.get_parsed_transaction(signature)
 
     def _schedule_sweep(self, target: DepositWatchTarget) -> None:
         self._spawn(self._safe_sweep(target), "deposit_sweep_failed", target.address)

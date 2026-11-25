@@ -125,3 +125,51 @@ class TestSolanaDepositParser:
         }
         with pytest.raises(IncompleteDepositTransaction):
             parser.parse(payload, destination=destination, signature="sig")
+
+    def test_parses_compiled_system_transfer(self) -> None:
+        import struct
+
+        parser = SolanaDepositParser()
+        destination = "Dest11111111111111111111111111111111111111"
+        sender = "Sender111111111111111111111111111111111111"
+        data = list(struct.pack("<I", 2) + struct.pack("<Q", 2_500_000))
+        payload = {
+            "meta": {"err": None},
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        "11111111111111111111111111111111",
+                        sender,
+                        destination,
+                    ],
+                    "instructions": [
+                        {
+                            "programIdIndex": 0,
+                            "accounts": [1, 2],
+                            "data": data,
+                        }
+                    ],
+                }
+            },
+        }
+        parsed = parser.parse(payload, destination=destination, signature="sig")
+        assert parsed is not None
+        assert parsed.lamports == 2_500_000
+        assert parsed.source == sender
+
+    def test_parses_static_account_keys(self) -> None:
+        parser = SolanaDepositParser()
+        destination = "Dest11111111111111111111111111111111111111"
+        payload = {
+            "meta": {"err": None, "preBalances": [5_000_000, 1_000_000], "postBalances": [4_000_000, 2_000_000]},
+            "transaction": {
+                "message": {
+                    "staticAccountKeys": ["Sender111111111111111111111111111111111111", destination],
+                    "instructions": [],
+                }
+            },
+        }
+        parsed = parser.parse(payload, destination=destination, signature="sig")
+        assert parsed is not None
+        assert parsed.lamports == 1_000_000
+

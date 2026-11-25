@@ -31,7 +31,6 @@ from casino.domain.records import (
     UserRecord,
 )
 from casino.errors import AlreadyProcessedError, InsufficientBalanceError, InsufficientHouseReserveError, NotFoundError
-from casino.domain.wager_race import qualifying_lamports
 from casino.utils.money import SolAmount
 
 
@@ -319,11 +318,7 @@ class MemoryGameRepository:
                 continue
             if game.resolved_at is None or game.resolved_at < since:
                 continue
-            total += qualifying_lamports(
-                game.wager_for(discord_id).lamports,
-                game_type=game.game_type,
-                limbo_target=game.limbo_target,
-            )
+            total += game.wager_for(discord_id).lamports
         return total
 
     async def try_add_to_side(

@@ -123,6 +123,39 @@ async def test_deposit_worker_does_not_skip_pending_transaction() -> None:
     worker = DepositMonitorWorker(deposits, rpc, cursors, clock, settings)  # type: ignore[arg-type]
     await worker.tick()
     cursors.set.assert_not_awaited()
+    deposits.sweep_target.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deposit_worker_reprocesses_tip_even_if_cursor_advanced() -> None:
+    clock = FrozenClock()
+    seen: list[str] = []
+
+    async def ingest_signature(signature, target):
+        seen.append(signature)
+        return None
+
+    deposits = SimpleNamespace(
+        watch_targets=AsyncMock(return_value=[DepositWatchTarget(address="addr1", user_id="1")]),
+        ingest_signature=ingest_signature,
+        sync_house_wallet=AsyncMock(return_value=None),
+        sweep_target=AsyncMock(return_value=None),
+    )
+
+    async def get_signatures(*_args, until=None, **_kwargs):
+        if until:
+            return ["sig-sweep"]
+        return ["sig-sweep", "sig-deposit"]
+
+    rpc = SimpleNamespace(is_configured=True, get_signatures=get_signatures)
+    cursors = SimpleNamespace(
+        get=AsyncMock(return_value=SimpleNamespace(value="sig-deposit")),
+        set=AsyncMock(),
+    )
+    settings = SimpleNamespace(deposit_wallets_per_tick=4, deposit_rpc_gap_seconds=0)
+    worker = DepositMonitorWorker(deposits, rpc, cursors, clock, settings)  # type: ignore[arg-type]
+    await worker.tick()
+    assert seen == ["sig-deposit", "sig-sweep"]
     deposits.sweep_target.assert_awaited_once()
 
 

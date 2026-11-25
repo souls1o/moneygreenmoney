@@ -239,7 +239,7 @@ async def test_ingest_waits_when_transaction_is_missing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ingest_sweeps_even_when_signature_is_not_an_incoming_transfer() -> None:
+async def test_ingest_does_not_sweep_uncredited_outgoing_signatures() -> None:
     service, users_repo, _house, _ledger, rpc, clock = _service()
     user = UserRecord(
         discord_id="1",
@@ -269,7 +269,7 @@ async def test_ingest_sweeps_even_when_signature_is_not_an_incoming_transfer() -
     )
     assert credited is None
     await asyncio.gather(*list(service._sweep_tasks), return_exceptions=True)
-    assert rpc.swept == ["player-1"]
+    assert rpc.swept == []
 
 
 @pytest.mark.asyncio

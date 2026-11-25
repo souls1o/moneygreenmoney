@@ -461,7 +461,7 @@ class TestRainService:
         assert joined.has_joined("p1")
 
     @pytest.mark.asyncio
-    async def test_limbo_low_multiplier_does_not_fully_count(self, harness: RainHarness) -> None:
+    async def test_limbo_low_multiplier_counts_full_wager(self, harness: RainHarness) -> None:
         harness.seed_user("creator")
         harness.seed_user("p1")
         rain = await harness.service.create_rain(
@@ -476,9 +476,6 @@ class TestRainService:
             limbo_target=Decimal("1.01"),
         )
         harness.seed_deposit("p1", 50_000_000)
-        with pytest.raises(RainError, match="wagered at least"):
-            await harness.join(rain.rain_id, "p1")
-        harness.seed_wager("p1", 50_000_000)
         joined = await harness.join(rain.rain_id, "p1")
         assert joined.has_joined("p1")
 

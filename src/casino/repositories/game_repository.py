@@ -9,7 +9,6 @@ from pymongo import ReturnDocument
 from casino.db.mongo import COLLECTION_GAMES
 from casino.domain.enums import CoinSide, GameStatus
 from casino.domain.records import GameRecord, is_house_seat
-from casino.domain.wager_race import qualifying_lamports
 from casino.repositories.base import MongoRepository
 from casino.repositories.mappers import DocumentMapper
 
@@ -60,11 +59,7 @@ class GameRepository(MongoRepository):
         total = 0
         async for document in cursor:
             game = self._mapper.game_from_document(document)
-            total += qualifying_lamports(
-                game.wager_for(discord_id).lamports,
-                game_type=game.game_type,
-                limbo_target=game.limbo_target,
-            )
+            total += game.wager_for(discord_id).lamports
         return total
 
     async def list_unposted(self, created_before: datetime, limit: int = 50) -> list[GameRecord]:

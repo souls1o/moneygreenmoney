@@ -82,14 +82,11 @@ class DepositMonitorWorker:
         cursor_name = deposit_cursor_name(target.address)
         cursor = await self._cursors.get(cursor_name)
         until = cursor.value if cursor else None
-        newest_first = await self._collect_signatures(target.address, until=until)
-        if until:
-            tip = await self._rpc.get_signatures(target.address, limit=PAGE_SIZE)
-            seen = set(newest_first)
-            newest_first = [signature for signature in tip if signature not in seen] + newest_first
+        oldest_first = await self._signatures_oldest_first(target.address, until=until)
         last_complete: str | None = None
-        if newest_first:
-            for signature in reversed(newest_first):
+        caught_up = True
+        if oldest_first:
+            for signature in oldest_first:
                 try:
                     credited = await self._deposits.ingest_signature(signature, target)
                     last_complete = signature
@@ -101,6 +98,7 @@ class DepositMonitorWorker:
                             address=target.address,
                         )
                 except DepositTransactionPendingError:
+                    caught_up = False
                     self._logger.info(
                         "deposit_signature_pending",
                         txSignature=signature,
@@ -108,13 +106,27 @@ class DepositMonitorWorker:
                     )
                     break
                 except Exception:
+                    caught_up = False
                     self._logger.exception(
                         "deposit_signature_failed", txSignature=signature, address=target.address
                     )
                     break
             if last_complete is not None:
                 await self._cursors.set(cursor_name, last_complete, self._clock.now())
-        await self._deposits.sweep_target(target)
+        if caught_up:
+            await self._deposits.sweep_target(target)
+
+    async def _signatures_oldest_first(self, address: str, *, until: str | None) -> list[str]:
+        tip = await self._rpc.get_signatures(address, limit=PAGE_SIZE)
+        older = await self._collect_signatures(address, until=until) if until else []
+        seen: set[str] = set()
+        newest_first: list[str] = []
+        for signature in list(tip) + list(older):
+            if not signature or signature in seen:
+                continue
+            seen.add(signature)
+            newest_first.append(signature)
+        return list(reversed(newest_first))
 
     def _schedule_house_sync(self) -> None:
         if self._house_sync_task is not None and not self._house_sync_task.done():
