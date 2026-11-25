@@ -59,6 +59,9 @@ async def test_stream_credits_mentioned_deposit_address() -> None:
             ingested.append((signature, target.address))
             return None
 
+        async def recover_swept_deposit(self, target: DepositWatchTarget):
+            return None
+
     worker = DepositStreamWorker(Deposits(), SimpleNamespace(solana_commitment="confirmed"))  # type: ignore[arg-type]
     target = DepositWatchTarget(address="Dep111111111111111111111111111111111111111", user_id="1")
     worker._targets = {target.address: target}

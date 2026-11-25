@@ -42,6 +42,7 @@ class DepositStreamWorker:
         self._req_id = 0
         self._ws = None
         self._sync_requested = asyncio.Event()
+        self._startup_recover_done = False
         self._logger = get_logger("casino.worker.deposit_stream")
 
     def request_sync(self) -> None:
@@ -72,7 +73,9 @@ class DepositStreamWorker:
         last_error: Exception | None = None
         for attempt, delay in enumerate(INGEST_RETRY_DELAYS, start=1):
             try:
-                await self._deposits.ingest_signature(notification.signature, target)
+                credited = await self._deposits.ingest_signature(notification.signature, target)
+                if credited is None and not target.is_house:
+                    await self._deposits.recover_swept_deposit(target)
                 return
             except DepositTransactionPendingError as exc:
                 last_error = exc
@@ -87,6 +90,11 @@ class DepositStreamWorker:
                 address=address,
                 error=str(last_error),
             )
+            if not target.is_house:
+                try:
+                    await self._deposits.recover_swept_deposit(target)
+                except Exception:
+                    self._logger.exception("deposit_stream_recover_failed", address=address)
 
     async def _run_session(self) -> None:
         url = self._settings.resolved_solana_ws_url()
@@ -98,6 +106,7 @@ class DepositStreamWorker:
             self._req_id = 0
             self._logger.info("deposit_stream_connected", url=_redact_ws_url(url))
             await self._sync_subscriptions()
+            await self._recover_missed_on_connect()
             reader = asyncio.create_task(self._read_loop(ws), name="deposit-stream-read")
             syncer = asyncio.create_task(self._sync_loop(), name="deposit-stream-sync")
             try:
@@ -145,6 +154,24 @@ class DepositStreamWorker:
                 pass
             self._sync_requested.clear()
             await self._sync_subscriptions()
+
+    async def _recover_missed_on_connect(self) -> None:
+        if self._startup_recover_done:
+            return
+        self._startup_recover_done = True
+        for target in list(self._targets.values()):
+            if target.is_house:
+                continue
+            try:
+                recovered = await self._deposits.recover_swept_deposit(target)
+                if recovered is not None:
+                    self._logger.info(
+                        "deposit_recovered_on_connect",
+                        userId=recovered.discord_id,
+                        address=target.address,
+                    )
+            except Exception:
+                self._logger.exception("deposit_stream_recover_failed", address=target.address)
 
     async def _sync_subscriptions(self) -> None:
         targets = await self._deposits.watch_targets()
