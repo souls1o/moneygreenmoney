@@ -227,14 +227,17 @@ class AdminService:
         try:
             signature = await self._rpc.send_from_house(wallet, amount)
         except SolanaTransferUnconfirmedError as exc:
-            signature = exc.signature
             self._logger.warning(
-                "house_withdrawal_sent_unconfirmed",
+                "house_withdrawal_unconfirmed_refunding",
                 destination=wallet,
                 amountLamports=amount.lamports,
                 actorId=actor_id,
-                txSignature=signature,
+                txSignature=exc.signature,
             )
+            await self._refund_house(amount, usd_price, wallet, actor_id, founder_shares_burned)
+            raise WithdrawalError(
+                "Solana never confirmed this house withdrawal on-chain. The house book was refunded."
+            ) from exc
         except Exception as exc:
             self._logger.exception(
                 "house_withdrawal_send_failed",

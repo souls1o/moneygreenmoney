@@ -34,6 +34,7 @@ def _service(*, house_lamports: int = 2_000_000_000):
     rpc = StubRpc()
     rpc.sent = []
     rpc.fail = False
+    rpc.unconfirmed = False
     rpc.balance = 10_000_000_000
     service = AdminService(
         None,  # type: ignore[arg-type]
@@ -74,6 +75,21 @@ async def test_house_withdraw_refunds_book_when_send_fails() -> None:
     rpc.fail = True
 
     with pytest.raises(WithdrawalError):
+        await service.withdraw_house(SolAmount.from_lamports(500_000_000), DESTINATION, "admin-1")
+
+    assert house_repo.record.sol_balance_lamports == 2_000_000_000
+    assert house_repo.record.founder_shares == 2_000_000_000
+    types = [item.type for item in ledger_repo.entries]
+    assert LedgerEntryType.WITHDRAWAL in types
+    assert LedgerEntryType.REFUND in types
+
+
+@pytest.mark.asyncio
+async def test_house_withdraw_refunds_book_when_send_is_unconfirmed() -> None:
+    service, house_repo, ledger_repo, rpc, _tx_repo = _service()
+    rpc.unconfirmed = True
+
+    with pytest.raises(WithdrawalError, match="never confirmed"):
         await service.withdraw_house(SolAmount.from_lamports(500_000_000), DESTINATION, "admin-1")
 
     assert house_repo.record.sol_balance_lamports == 2_000_000_000

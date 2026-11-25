@@ -607,6 +607,17 @@ class MemoryTransactionRepository:
     async def find_by_id(self, transaction_id: str, session=None) -> TransactionRecord | None:
         return self.items.get(transaction_id)
 
+    async def find_latest_withdrawal(self, user_id: str, session=None) -> TransactionRecord | None:
+        found = [
+            item
+            for item in self.items.values()
+            if item.user_id == user_id and item.type is TransactionType.WITHDRAWAL
+        ]
+        if not found:
+            return None
+        found.sort(key=lambda item: item.created_at or datetime.min, reverse=True)
+        return found[0]
+
     async def sum_player_deposited_since(self, discord_id: str, since: datetime) -> int:
         total = 0
         for transaction in self.items.values():

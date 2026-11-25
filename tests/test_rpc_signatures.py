@@ -5,6 +5,7 @@ from casino.solana_client.rpc import (
     SWEEP_FEE_LAMPORTS,
     house_align_transfer,
     signature_entries,
+    signature_status_outcome,
     sweepable_lamports,
 )
 
@@ -47,6 +48,20 @@ def test_house_align_sends_wins_from_super_and_losses_to_super() -> None:
         rent=rent,
         fee=fee,
     ) == ("to_super", 1_000_000_000 - fee)
+
+
+def test_processed_signature_status_counts_as_landed() -> None:
+    assert signature_status_outcome(None) is None
+    assert signature_status_outcome(SimpleNamespace(err={"InstructionError": []})) == "failed"
+    assert (
+        signature_status_outcome(SimpleNamespace(err=None, confirmation_status="processed", slot=1))
+        == "ok"
+    )
+    assert (
+        signature_status_outcome(SimpleNamespace(err=None, confirmation_status="confirmed", slot=2))
+        == "ok"
+    )
+    assert signature_status_outcome(SimpleNamespace(err=None, confirmation_status="", slot=9)) == "ok"
 
 
 def test_house_align_keeps_rent_when_book_is_empty() -> None:

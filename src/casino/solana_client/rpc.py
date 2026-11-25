@@ -61,6 +61,20 @@ class SolanaTransferUnconfirmedError(RuntimeError):
         super().__init__(message or f"Solana transfer {signature} was submitted but not confirmed.")
 
 
+def signature_status_outcome(status: object | None) -> Literal["ok", "failed"] | None:
+    """Map getSignatureStatuses value to landed / failed / still unknown."""
+    if status is None:
+        return None
+    if getattr(status, "err", None):
+        return "failed"
+    confirmation = str(getattr(status, "confirmation_status", "") or "").lower()
+    if any(word in confirmation for word in ("processed", "confirmed", "finalized")):
+        return "ok"
+    if getattr(status, "slot", None) not in (None, 0):
+        return "ok"
+    return None
+
+
 def _rpc_error_may_have_submitted(exc: BaseException) -> bool:
     detail = str(exc).lower()
     if not detail:
@@ -294,8 +308,12 @@ class SolanaRpcGateway:
         signatures = getattr(transaction, "signatures", None) or []
         signature = str(signatures[0]) if signatures else ""
         opts = TxOpts(skip_preflight=skip_preflight, skip_confirmation=True, max_retries=3)
+        raw = bytes(transaction)
         try:
-            response = await self.client.send_transaction(transaction, opts=opts)
+            try:
+                response = await self.client.send_raw_transaction(raw, opts=opts)
+            except TypeError:
+                response = await self.client.send_transaction(transaction, opts=opts)
             signature = str(response.value) or signature
         except Exception as exc:
             if signature and _rpc_error_may_have_submitted(exc):
@@ -327,15 +345,17 @@ class SolanaRpcGateway:
         sig = Signature.from_string(signature)
         for _ in range(attempts):
             try:
-                response = await self.client.get_signature_statuses([sig])
+                try:
+                    response = await self.client.get_signature_statuses(
+                        [sig], search_transaction_history=True
+                    )
+                except TypeError:
+                    response = await self.client.get_signature_statuses([sig])
                 statuses = getattr(response, "value", None) or []
                 status = statuses[0] if statuses else None
-                if status is not None:
-                    if getattr(status, "err", None):
-                        return "failed"
-                    confirmation = str(getattr(status, "confirmation_status", "") or "").lower()
-                    if "confirmed" in confirmation or "finalized" in confirmation:
-                        return "ok"
+                outcome = signature_status_outcome(status)
+                if outcome is not None:
+                    return outcome
             except Exception:
                 pass
             try:
@@ -478,12 +498,10 @@ class SolanaRpcGateway:
             )
             signatures = getattr(transaction, "signatures", None) or []
             signature = str(signatures[0]) if signatures else ""
-            submitted = False
             try:
                 signature = await self.send_transaction(
                     transaction, skip_preflight=False, confirm=False
                 )
-                submitted = True
             except SolanaTransferUnconfirmedError:
                 raise
             except Exception as exc:
@@ -497,36 +515,47 @@ class SolanaRpcGateway:
                 )
                 if not _rpc_error_may_have_submitted(exc):
                     break
-                if not submitted and not signature:
+                if not signature:
                     continue
-            try:
-                await self.confirm_signature(signature)
-            except SolanaTransferUnconfirmedError:
-                self._logger.warning(
-                    "signed_transfer_unconfirmed",
-                    label=label,
+            outcome = await self.wait_for_signature(signature, attempts=45, delay=1.0)
+            if outcome is None:
+                try:
+                    await self.send_transaction(transaction, skip_preflight=True, confirm=False)
+                except Exception as resubmit_exc:
+                    self._logger.warning(
+                        "signed_transfer_resubmit_failed",
+                        label=label,
+                        txSignature=signature,
+                        error=str(resubmit_exc),
+                    )
+                outcome = await self.wait_for_signature(signature, attempts=45, delay=1.0)
+            if outcome == "ok":
+                self._logger.info(
+                    label,
+                    destination=destination,
+                    source=str(source.pubkey()),
+                    amountLamports=amount.lamports,
                     txSignature=signature,
                     attempt=attempt + 1,
                 )
-                raise
-            except Exception as exc:
-                last_error = exc
+                return signature
+            if outcome == "failed":
+                last_error = RuntimeError(f"The Solana transaction failed: {signature}")
                 self._logger.warning(
                     "signed_transfer_retry",
                     label=label,
                     attempt=attempt + 1,
                     txSignature=signature,
-                    error=str(exc),
+                    error=str(last_error),
                 )
                 continue
-            self._logger.info(
-                label,
-                destination=destination,
-                source=str(source.pubkey()),
-                amountLamports=amount.lamports,
+            last_error = SolanaTransferUnconfirmedError(signature)
+            self._logger.warning(
+                "signed_transfer_unconfirmed",
+                label=label,
                 txSignature=signature,
                 attempt=attempt + 1,
             )
-            return signature
+            continue
         assert last_error is not None
         raise last_error

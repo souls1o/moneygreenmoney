@@ -205,6 +205,38 @@ class AdminCog(commands.Cog):
                 self._embeds.error(f"Could not scan that deposit address: {exc}"),
             )
 
+    @app_commands.command(
+        name="complete_withdrawal",
+        description="Pay an already-debited withdrawal from the super wallet if it never landed on-chain",
+    )
+    @app_commands.describe(member="Member who was debited but did not receive SOL")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    async def complete_withdrawal(self, interaction: discord.Interaction, member: discord.Member) -> None:
+        await ack(interaction)
+        try:
+            await self._guard(interaction)
+            with LogContext.bind(userId=str(member.id)):
+                result = await self._container.withdrawals.complete_unconfirmed(str(member.id))
+                await send_panel(
+                    interaction,
+                    self._embeds.success(
+                        "Withdrawal sent",
+                        (
+                            f"Paid `{self._container.math.format_sol(result.amount)} SOL` "
+                            f"to `{result.destination}` for {member.mention}.\n"
+                            f"Signature `{result.signature}`."
+                        ),
+                    ),
+                )
+        except Exception as exc:
+            get_logger(self.__class__.__name__).exception("complete_withdrawal_failed")
+            await send_panel(
+                interaction,
+                self._embeds.error(f"Could not complete that withdrawal: {exc}"),
+            )
+
     @app_commands.command(name="housestats", description="Show house balance, super wallet, and timeframe stats")
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)

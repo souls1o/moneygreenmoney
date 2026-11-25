@@ -107,13 +107,16 @@ class WithdrawalService:
             try:
                 signature = await self._rpc.send_from_super(wallet, payout)
             except SolanaTransferUnconfirmedError as exc:
-                signature = exc.signature
                 self._logger.warning(
-                    "withdrawal_sent_unconfirmed",
+                    "withdrawal_unconfirmed_refunding",
                     destination=wallet,
                     amountLamports=payout.lamports,
-                    txSignature=signature,
+                    txSignature=exc.signature,
                 )
+                await self._refund(discord_id, amount, usd_price, wallet)
+                raise WithdrawalError(
+                    "Solana never confirmed this withdrawal on-chain. Your balance was refunded. Try again."
+                ) from exc
             except Exception as exc:
                 self._logger.exception(
                     "withdrawal_send_failed",
@@ -144,6 +147,72 @@ class WithdrawalService:
                 destination=wallet,
                 signature=signature,
             )
+
+    async def complete_unconfirmed(self, discord_id: str) -> WithdrawalResult:
+        """Pay an already-debited withdrawal from the super wallet without touching casino balance."""
+        self.ensure_enabled()
+        user = await self._users.get(discord_id)
+        if user is None:
+            raise WithdrawalError("That member has no casino account.")
+        tx = await self._transactions.find_latest_withdrawal(discord_id)
+        if tx is None:
+            raise WithdrawalError("No withdrawal was found for that member.")
+        wallet = self._addresses.parse(_destination_from_withdrawal(tx))
+        payout = SolAmount.from_lamports(abs(int(tx.amount_lamports)))
+        if payout.is_zero():
+            raise WithdrawalError("That withdrawal amount is zero.")
+        if tx.solana_tx_signature:
+            try:
+                outcome = await self._rpc.wait_for_signature(
+                    tx.solana_tx_signature, attempts=8, delay=0.5
+                )
+            except Exception:
+                outcome = None
+            if outcome == "ok":
+                return WithdrawalResult(
+                    user=user,
+                    amount=payout,
+                    destination=wallet,
+                    signature=tx.solana_tx_signature,
+                )
+        super_balance = await self._rpc.get_balance(self._rpc.super_address)
+        rent = await self._rpc.get_rent_exempt_lamports()
+        needed = payout.lamports + SWEEP_FEE_LAMPORTS + rent
+        if super_balance < needed:
+            raise WithdrawalError(
+                "The super wallet does not have enough on-chain SOL to pay this withdrawal right now."
+            )
+        try:
+            signature = await self._rpc.send_from_super(wallet, payout)
+        except SolanaTransferUnconfirmedError as exc:
+            raise WithdrawalError(
+                "Solana still did not confirm the payout. The player's casino balance was not changed."
+            ) from exc
+        except Exception as exc:
+            raise WithdrawalError(_user_send_error(exc)) from exc
+        try:
+            await self._transactions.attach_signature(tx.transaction_id, signature)
+        except Exception:
+            self._logger.exception("withdrawal_signature_attach_failed", txId=tx.transaction_id)
+        self._logger.info(
+            "withdrawal_completed_on_chain",
+            amountLamports=payout.lamports,
+            destination=wallet,
+            txSignature=signature,
+            userId=discord_id,
+        )
+        if self._on_sent is not None:
+            try:
+                await self._on_sent(discord_id, payout, wallet, signature)
+            except Exception:
+                self._logger.exception("withdrawal_alert_failed", userId=discord_id)
+        refreshed = await self._users.get(discord_id) or user
+        return WithdrawalResult(
+            user=refreshed,
+            amount=payout,
+            destination=wallet,
+            signature=signature,
+        )
 
     async def _refund(self, discord_id: str, amount: SolAmount, usd_price, wallet: str) -> None:
         last_error: Exception | None = None
@@ -177,6 +246,20 @@ class WithdrawalService:
                 amountLamports=amount.lamports,
                 error=str(last_error),
             )
+
+
+def _destination_from_withdrawal(tx) -> str:
+    metadata = tx.metadata if isinstance(getattr(tx, "metadata", None), dict) else {}
+    dest = metadata.get("destination")
+    if isinstance(dest, str) and dest.strip():
+        return dest.strip()
+    description = str(metadata.get("description") or "")
+    prefix = "SOL withdrawal to "
+    if description.startswith(prefix):
+        wallet = description[len(prefix) :].strip()
+        if wallet:
+            return wallet
+    raise WithdrawalError("Could not read the destination wallet from that withdrawal.")
 
 
 def _user_send_error(exc: BaseException) -> str:

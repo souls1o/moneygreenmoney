@@ -40,6 +40,16 @@ class TransactionRepository(MongoRepository):
         document = await self.collection.find_one({"transactionId": transaction_id}, session=session)
         return self._mapper.transaction_from_document(document) if document else None
 
+    async def find_latest_withdrawal(
+        self, user_id: str, session: AsyncIOMotorClientSession | None = None
+    ) -> TransactionRecord | None:
+        document = await self.collection.find_one(
+            {"userId": user_id, "type": TransactionType.WITHDRAWAL.value},
+            sort=[("createdAt", -1)],
+            session=session,
+        )
+        return self._mapper.transaction_from_document(document) if document else None
+
     async def sum_player_deposited_since(self, discord_id: str, since: datetime) -> int:
         pipeline = [
             {
