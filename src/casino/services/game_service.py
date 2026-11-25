@@ -29,6 +29,13 @@ from casino.domain.records import (
     PlayerProfileStats,
     is_house_seat,
 )
+from casino.domain.baccarat import (
+    BaccaratBetResult,
+    BaccaratSide,
+    parse_baccarat_side,
+    payout_lamports as baccarat_payout_lamports,
+    profit_lamports as baccarat_profit_lamports,
+)
 from casino.domain.limbo import limbo_payout_lamports, limbo_profit_lamports, parse_limbo_multiplier
 from casino.domain.mines import (
     MINES_TILES,
@@ -37,6 +44,12 @@ from casino.domain.mines import (
     parse_mines_count,
 )
 from casino.domain.target import closest_winners, parse_target_pick
+from casino.domain.tower import (
+    TOWER_FLOORS,
+    parse_tower_difficulty,
+    tower_payout_lamports,
+    tower_tiles_for,
+)
 from casino.errors import GameError, InsufficientHouseReserveError, NotFoundError
 from casino.logging.logger import LogContext, get_logger
 from casino.repositories.game_repository import GameRepository
@@ -112,6 +125,8 @@ class GameService:
         first_to: int | None = None,
         limbo_target: Decimal | str | None = None,
         mines_count: int | str | None = None,
+        baccarat_side: BaccaratSide | str | None = None,
+        tower_difficulty: str | None = None,
     ) -> GameRecord:
         user = await self._user_service.get_or_create(player1_id)
         quote = await self._prices.get_quote()
@@ -121,12 +136,19 @@ class GameService:
         usd_price = quote.sol_price("USD")
         bet_usd = fiat_amount * usd_price / sol_price
         self._validation.validate_bet(bet_usd)
-        if game_type in {GameType.BLACKJACK, GameType.LIMBO, GameType.MINES}:
+        vs_house_types = {
+            GameType.BLACKJACK,
+            GameType.LIMBO,
+            GameType.MINES,
+            GameType.BACCARAT,
+            GameType.TOWER,
+        }
+        if game_type in vs_house_types:
             await self._require_vs_house_bet_cap(bet)
 
         now = self._clock.now()
         game_id = self._identifiers.game_id(game_type)
-        vs_house = game_type in {GameType.BLACKJACK, GameType.LIMBO, GameType.MINES}
+        vs_house = game_type in vs_house_types
         heads_ids = [player1_id] if side is CoinSide.HEADS else []
         tails_ids = [player1_id] if side is CoinSide.TAILS else []
         target = first_to if first_to is not None else 1
@@ -134,7 +156,15 @@ class GameService:
         if game_type is GameType.LIMBO and parsed_limbo is None:
             raise GameError("Choose a multiplier from 1.01 to 1,000,000.")
         parsed_mines = parse_mines_count(mines_count) if game_type is GameType.MINES else 0
-        if game_type not in {GameType.LIMBO, GameType.MINES}:
+        parsed_side = (
+            parse_baccarat_side(baccarat_side)
+            if game_type is GameType.BACCARAT and baccarat_side is not None
+            else None
+        )
+        parsed_tower = parse_tower_difficulty(tower_difficulty) if game_type is GameType.TOWER else ""
+        if game_type is GameType.TOWER and not parsed_tower:
+            raise GameError("Choose Easy, Medium, or Hard.")
+        if game_type not in {GameType.LIMBO, GameType.MINES, GameType.BACCARAT, GameType.TOWER}:
             if target < 1 or target > 21:
                 raise GameError("First-to must be between 1 and 21.")
         first_to = target
@@ -200,21 +230,25 @@ class GameService:
                     first_to=first_to,
                     limbo_target=parsed_limbo,
                     mines_count=parsed_mines,
+                    baccarat_side=parsed_side,
+                    tower_difficulty=parsed_tower,
+                    tower_tiles=tower_tiles_for(parsed_tower) if parsed_tower else 0,
                     created_at=now,
                 )
-                game.record_wager(player1_id, bet.lamports)
+                game.record_wager(player1_id, 0 if game_type is GameType.BACCARAT else bet.lamports)
                 await self._games.insert(game, session=uow.session)
-                mutation = await self._balances.debit(
-                    user_id=player1_id,
-                    amount=bet,
-                    entry_type=LedgerEntryType.BET,
-                    transaction_type=TransactionType.BET,
-                    price_usd=usd_price,
-                    description=f"{game_type.value.title()} wager {game_id}",
-                    game_id=game_id,
-                    session=uow.session,
-                )
-                game.ledger_ids.append(mutation.ledger_entry.entry_id)
+                if game_type is not GameType.BACCARAT:
+                    mutation = await self._balances.debit(
+                        user_id=player1_id,
+                        amount=bet,
+                        entry_type=LedgerEntryType.BET,
+                        transaction_type=TransactionType.BET,
+                        price_usd=usd_price,
+                        description=f"{game_type.value.title()} wager {game_id}",
+                        game_id=game_id,
+                        session=uow.session,
+                    )
+                    game.ledger_ids.append(mutation.ledger_entry.entry_id)
                 if game_type is GameType.BLACKJACK:
                     await self._seat_house_and_deal_blackjack(
                         game, bet, usd_price, bet_usd, session=uow.session
@@ -223,6 +257,14 @@ class GameService:
                     await self._play_limbo(game, bet, usd_price, bet_usd, session=uow.session)
                 if game_type is GameType.MINES:
                     await self._start_mines(game, bet, usd_price, session=uow.session)
+                if game_type is GameType.BACCARAT:
+                    game.house_seat_ids = [HOUSE_USER_ID]
+                    game.record_wager(HOUSE_USER_ID, 0)
+                    game.ready_ids = [player1_id]
+                    game.status = GameStatus.ACTIVE
+                    game.auto_flip_at = None
+                if game_type is GameType.TOWER:
+                    await self._start_tower(game, bet, usd_price, session=uow.session)
                 replaced = await self._games.replace(game, session=uow.session)
                 if not replaced:
                     raise GameError("The game could not be stored.")
@@ -1032,7 +1074,14 @@ class GameService:
         return resolved
 
     def _sync_auto_flip(self, game: GameRecord, now) -> None:
-        if game.is_target() or game.is_blackjack() or game.is_limbo() or game.is_mines():
+        if (
+            game.is_target()
+            or game.is_blackjack()
+            or game.is_limbo()
+            or game.is_mines()
+            or game.is_baccarat()
+            or game.is_tower()
+        ):
             game.auto_flip_at = None
             return
         if game.is_full():
@@ -2076,6 +2125,312 @@ class GameService:
             minesCount=game.mines_count,
             minesGems=gems,
             minesHit=game.mines_hit,
+        )
+
+    async def play_baccarat(self, game_id: str, player_id: str, side: BaccaratSide | str) -> GameRecord:
+        parsed = parse_baccarat_side(side)
+        quote = await self._prices.get_quote()
+        usd_price = quote.sol_price("USD")
+        with LogContext.bind(userId=player_id, gameId=game_id):
+            async with self._uow.begin() as uow:
+                game = await self._games.find_by_id(game_id, session=uow.session)
+                if game is None:
+                    raise NotFoundError("That game was not found.")
+                if not game.is_baccarat() or game.status is not GameStatus.ACTIVE:
+                    raise GameError("This baccarat table is not waiting for a bet.")
+                if player_id != game.creator_id:
+                    raise GameError("Only the player can bet on this table.")
+                if game.baccarat_side is not None:
+                    raise GameError("A side is already locked for this round.")
+                bet = SolAmount.from_lamports(game.bet_amount_lamports)
+                await self._require_vs_house_bet_cap(bet)
+                mutation = await self._balances.debit(
+                    user_id=player_id,
+                    amount=bet,
+                    entry_type=LedgerEntryType.BET,
+                    transaction_type=TransactionType.BET,
+                    price_usd=usd_price,
+                    description=f"Baccarat wager {game.game_id}",
+                    game_id=game.game_id,
+                    session=uow.session,
+                )
+                game.ledger_ids.append(mutation.ledger_entry.entry_id)
+                game.record_wager(player_id, bet.lamports)
+                game.baccarat_side = parsed
+                bet_usd = game.stake_usd() if game.bet_amount_usd > 0 else self._math.sol_to_fiat(bet, usd_price)
+                await self._play_baccarat(game, bet, usd_price, bet_usd, session=uow.session)
+                replaced = await self._games.replace(game, session=uow.session)
+                if not replaced:
+                    raise GameError("The round could not be updated due to a concurrent action.")
+            self._logger.info("baccarat_played", side=parsed.value)
+        return game
+
+    async def _play_baccarat(
+        self,
+        game: GameRecord,
+        bet: SolAmount,
+        usd_price: Decimal,
+        bet_usd: Decimal,
+        *,
+        session,
+    ) -> None:
+        side = game.baccarat_side
+        if side is None:
+            raise GameError("Choose Player, Banker, or Tie.")
+        profit = SolAmount.from_lamports(baccarat_profit_lamports(bet.lamports, side))
+        try:
+            _treasury, house_bet = await self._balances.debit_house_reserve(
+                amount=profit,
+                price_usd=usd_price,
+                description=f"House baccarat {game.game_id}",
+                game_id=game.game_id,
+                session=session,
+            )
+        except InsufficientHouseReserveError as exc:
+            raise GameError("The house book does not have enough SOL for that baccarat bet.") from exc
+        game.ledger_ids.append(house_bet.entry_id)
+        game.house_seat_ids = [HOUSE_USER_ID]
+        game.record_wager(HOUSE_USER_ID, profit.lamports)
+        if not game.server_seed:
+            raise GameError("This game is missing its server seed.")
+        fair = self._rng.resolve_baccarat(game.server_seed, game.client_seed, game.nonce)
+        game.baccarat_player_cards = list(fair.deal.player_cards)
+        game.baccarat_banker_cards = list(fair.deal.banker_cards)
+        result, payout_lamports = baccarat_payout_lamports(bet.lamports, side, fair.deal.outcome)
+        payout = SolAmount.from_lamports(payout_lamports)
+        leftover = SolAmount.from_lamports(max(profit.lamports + bet.lamports - payout.lamports, 0))
+        if not leftover.is_zero():
+            _treasury, take = await self._balances.credit_house_reserve(
+                amount=leftover,
+                entry_type=LedgerEntryType.WIN,
+                transaction_type=TransactionType.WIN,
+                price_usd=usd_price,
+                description=f"Baccarat house {game.game_id}",
+                game_id=game.game_id,
+                session=session,
+            )
+            game.ledger_ids.append(take.entry_id)
+        won = result is BaccaratBetResult.WIN
+        if not payout.is_zero():
+            win = await self._balances.credit(
+                user_id=game.creator_id,
+                amount=payout,
+                entry_type=LedgerEntryType.WIN if won else LedgerEntryType.REFUND,
+                transaction_type=TransactionType.WIN if won else TransactionType.REFUND,
+                price_usd=usd_price,
+                description=f"Baccarat {result.value} {game.game_id}",
+                game_id=game.game_id,
+                won=payout if won else SolAmount.zero(),
+                session=session,
+            )
+            game.ledger_ids.append(win.ledger_entry.entry_id)
+        if won:
+            game.winner_ids = [game.creator_id]
+        elif result is BaccaratBetResult.PUSH:
+            game.winner_ids = []
+        else:
+            game.winner_ids = [HOUSE_USER_ID]
+        game.winner_id = game.winner_ids[0] if game.winner_ids else None
+        now = self._clock.now()
+        await self._assign_game_number(game, session=session)
+        payout_usd = self._math.sol_to_fiat(payout, usd_price) if won else Decimal("0")
+        await self._users.apply_game_stats(
+            game.creator_id,
+            wagered=bet,
+            wagered_usd=bet_usd,
+            max_bet_usd=bet_usd,
+            fees_paid=SolAmount.zero(),
+            won=won,
+            won_usd=payout_usd,
+            now=now,
+            session=session,
+        )
+        await self._record_race_wager(game.creator_id, bet, game, session=session)
+        game.status = GameStatus.COMPLETED
+        game.house_fee_lamports = 0
+        game.house_fee_usd = Decimal("0")
+        game.winner_payout_lamports = payout.lamports
+        game.per_winner_payout_lamports = payout.lamports
+        game.resolved_at = now
+        game.expires_at = None
+        game.auto_flip_at = None
+        self._logger.info(
+            "game_resolved",
+            winnerIds=game.winner_ids,
+            houseFeeLamports=0,
+            payoutLamports=payout.lamports,
+            gameType=game.game_type.value,
+            baccaratSide=side.value,
+            baccaratOutcome=fair.deal.outcome.value,
+        )
+
+    async def tower_pick(self, game_id: str, player_id: str, tile: int) -> GameRecord:
+        quote = await self._prices.get_quote(allow_stale=True)
+        usd_price = quote.sol_price("USD")
+        with LogContext.bind(userId=player_id, gameId=game_id):
+            async with self._uow.begin() as uow:
+                game = await self._require_active_tower(game_id, player_id, session=uow.session)
+                floor = len(game.tower_picks)
+                index = int(tile)
+                if index < 0 or index >= game.tower_tiles:
+                    raise GameError("Pick a tile on this floor.")
+                if floor >= len(game.tower_layout):
+                    raise GameError("This tower is already finished.")
+                if game.tower_layout[floor] == index:
+                    game.tower_picks.append(index)
+                    game.tower_hit = floor
+                    await self._complete_tower(game, usd_price, session=uow.session)
+                else:
+                    extra = self._tower_profit_delta(
+                        game.bet_amount_lamports,
+                        game.tower_tiles,
+                        floor,
+                        floor + 1,
+                    )
+                    if extra > 0:
+                        try:
+                            _treasury, house_bet = await self._balances.debit_house_reserve(
+                                amount=SolAmount.from_lamports(extra),
+                                price_usd=usd_price,
+                                description=f"House tower {game.game_id}",
+                                game_id=game.game_id,
+                                session=uow.session,
+                            )
+                        except InsufficientHouseReserveError as exc:
+                            raise GameError(
+                                "The house book does not have enough SOL for that floor."
+                            ) from exc
+                        game.ledger_ids.append(house_bet.entry_id)
+                        game.record_wager(
+                            HOUSE_USER_ID,
+                            game.wager_for(HOUSE_USER_ID).lamports + extra,
+                        )
+                    game.tower_picks.append(index)
+                    if len(game.tower_picks) >= TOWER_FLOORS:
+                        await self._complete_tower(game, usd_price, session=uow.session)
+                replaced = await self._games.replace(game, session=uow.session)
+                if not replaced:
+                    raise GameError("The tower could not be updated due to a concurrent action.")
+            self._logger.info("tower_pick", tile=index, floor=floor, status=game.status.value)
+        return game
+
+    async def tower_cashout(self, game_id: str, player_id: str) -> GameRecord:
+        quote = await self._prices.get_quote(allow_stale=True)
+        usd_price = quote.sol_price("USD")
+        with LogContext.bind(userId=player_id, gameId=game_id):
+            async with self._uow.begin() as uow:
+                game = await self._require_active_tower(game_id, player_id, session=uow.session)
+                if not game.tower_picks:
+                    raise GameError("Climb at least one floor before cashing out.")
+                await self._complete_tower(game, usd_price, session=uow.session)
+                replaced = await self._games.replace(game, session=uow.session)
+                if not replaced:
+                    raise GameError("The tower could not be updated due to a concurrent action.")
+            self._logger.info("tower_cashout", floors=len(game.tower_picks))
+        return game
+
+    async def _require_active_tower(self, game_id: str, player_id: str, *, session) -> GameRecord:
+        game = await self._games.find_by_id(game_id, session=session)
+        if game is None:
+            raise NotFoundError("That game was not found.")
+        if not game.is_tower() or game.status is not GameStatus.ACTIVE:
+            raise GameError("This tower is not in play.")
+        if player_id != game.creator_id:
+            raise GameError("Only the player can act on this tower.")
+        return game
+
+    def _tower_profit_delta(self, bet_lamports: int, tiles: int, old_floors: int, new_floors: int) -> int:
+        old_profit = max(tower_payout_lamports(bet_lamports, tiles, old_floors) - bet_lamports, 0)
+        new_profit = max(tower_payout_lamports(bet_lamports, tiles, new_floors) - bet_lamports, 0)
+        return max(new_profit - old_profit, 0)
+
+    async def _start_tower(self, game: GameRecord, bet: SolAmount, usd_price: Decimal, *, session) -> None:
+        tiles = tower_tiles_for(game.tower_difficulty)
+        if not game.server_seed:
+            raise GameError("This game is missing its server seed.")
+        fair = self._rng.resolve_tower(game.server_seed, game.client_seed, game.nonce, tiles)
+        game.house_seat_ids = [HOUSE_USER_ID]
+        game.record_wager(HOUSE_USER_ID, 0)
+        game.tower_tiles = tiles
+        game.tower_layout = list(fair.mines)
+        game.tower_picks = []
+        game.tower_hit = None
+        game.ready_ids = [game.creator_id]
+        game.status = GameStatus.ACTIVE
+        game.auto_flip_at = None
+
+    async def _complete_tower(self, game: GameRecord, usd_price: Decimal, *, session) -> None:
+        bet = SolAmount.from_lamports(game.bet_amount_lamports)
+        reserved = SolAmount.from_lamports(int(game.player_wager_lamports.get(HOUSE_USER_ID, 0)))
+        floors = len(game.tower_picks)
+        hit = game.tower_hit is not None
+        payout = (
+            SolAmount.zero()
+            if hit
+            else SolAmount.from_lamports(tower_payout_lamports(bet.lamports, game.tower_tiles, floors))
+        )
+        leftover = SolAmount.from_lamports(max(reserved.lamports + bet.lamports - payout.lamports, 0))
+        if not leftover.is_zero():
+            _treasury, take = await self._balances.credit_house_reserve(
+                amount=leftover,
+                entry_type=LedgerEntryType.WIN,
+                transaction_type=TransactionType.WIN,
+                price_usd=usd_price,
+                description=f"Tower house {game.game_id}",
+                game_id=game.game_id,
+                session=session,
+            )
+            game.ledger_ids.append(take.entry_id)
+        if not payout.is_zero():
+            win = await self._balances.credit(
+                user_id=game.creator_id,
+                amount=payout,
+                entry_type=LedgerEntryType.WIN,
+                transaction_type=TransactionType.WIN,
+                price_usd=usd_price,
+                description=f"Tower win {game.game_id}",
+                game_id=game.game_id,
+                won=payout,
+                session=session,
+            )
+            game.ledger_ids.append(win.ledger_entry.entry_id)
+            game.winner_ids = [game.creator_id]
+        else:
+            game.winner_ids = [HOUSE_USER_ID]
+        game.winner_id = game.winner_ids[0]
+        now = self._clock.now()
+        await self._assign_game_number(game, session=session)
+        bet_usd = game.stake_usd() if game.bet_amount_usd > 0 else self._math.sol_to_fiat(bet, usd_price)
+        payout_usd = self._math.sol_to_fiat(payout, usd_price)
+        won = not hit
+        await self._users.apply_game_stats(
+            game.creator_id,
+            wagered=bet,
+            wagered_usd=bet_usd,
+            max_bet_usd=bet_usd,
+            fees_paid=SolAmount.zero(),
+            won=won,
+            won_usd=payout_usd if won else Decimal("0"),
+            now=now,
+            session=session,
+        )
+        await self._record_race_wager(game.creator_id, bet, game, session=session)
+        game.status = GameStatus.COMPLETED
+        game.house_fee_lamports = 0
+        game.house_fee_usd = Decimal("0")
+        game.winner_payout_lamports = payout.lamports
+        game.per_winner_payout_lamports = payout.lamports
+        game.resolved_at = now
+        game.expires_at = None
+        game.auto_flip_at = None
+        self._logger.info(
+            "game_resolved",
+            winnerIds=game.winner_ids,
+            houseFeeLamports=0,
+            payoutLamports=payout.lamports,
+            gameType=game.game_type.value,
+            towerFloors=floors,
+            towerHit=game.tower_hit,
         )
 
     async def _record_race_wager(self, user_id: str, amount: SolAmount, game: GameRecord, *, session) -> None:

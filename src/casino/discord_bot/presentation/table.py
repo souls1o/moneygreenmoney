@@ -66,7 +66,14 @@ class GameTablePresenter:
             game.table_number = number
         private = (
             None
-            if game.is_blackjack() or game.is_target() or game.is_limbo() or game.is_mines()
+            if (
+                game.is_blackjack()
+                or game.is_target()
+                or game.is_limbo()
+                or game.is_mines()
+                or game.is_baccarat()
+                or game.is_tower()
+            )
             else await self._create_private_channel(game, creator)
         )
         if private is not None:
@@ -125,6 +132,45 @@ class GameTablePresenter:
         message = await interaction.original_response()
         channel_id = str(interaction.channel_id or message.channel.id)
         await self._container.games.attach_listing(game.game_id, channel_id, str(message.id))
+        return await self._container.games.get(game.game_id)
+
+    async def provision_house_baccarat_interaction(
+        self, game: GameRecord, interaction: discord.Interaction
+    ) -> GameRecord:
+        if game.guild_id:
+            await self._container.games.attach_guild(game.game_id, game.guild_id)
+        panel = await self._embeds.house_baccarat_panel(game)
+        await interaction.edit_original_response(**panel.edit_kwargs())
+        panel.stop()
+        message = await interaction.original_response()
+        channel_id = str(interaction.channel_id or message.channel.id)
+        await self._container.games.attach_listing(game.game_id, channel_id, str(message.id))
+        return await self._container.games.get(game.game_id)
+
+    async def provision_tower_interaction(
+        self, game: GameRecord, interaction: discord.Interaction
+    ) -> GameRecord:
+        if game.guild_id:
+            await self._container.games.attach_guild(game.game_id, game.guild_id)
+        channel = interaction.channel
+        if not isinstance(channel, discord.abc.Messageable):
+            raise GameError("This command must be used in a channel.")
+        panel = await self._embeds.tower_panel(game)
+        posted = await channel.send(**panel.send_kwargs())
+        panel.stop()
+        await self._container.games.attach_listing(game.game_id, str(posted.channel.id), str(posted.id))
+        notice = self._embeds.success(
+            "Tower",
+            "The tower is in this channel. Anyone can watch; only you can climb it.",
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(**notice.edit_kwargs())
+            else:
+                await interaction.response.send_message(**notice.send_kwargs(ephemeral=True))
+        except discord.HTTPException:
+            pass
+        notice.stop()
         return await self._container.games.get(game.game_id)
 
     async def provision_mines_interaction(
@@ -254,6 +300,50 @@ class GameTablePresenter:
     ) -> GameRecord:
         async with self._dice_lock(game_id):
             game = await self._container.games.mines_cashout(game_id, player_id)
+            await self.on_resolved(game, interaction=interaction)
+            return game
+
+    async def handle_house_baccarat_side(
+        self,
+        game_id: str,
+        player_id: str,
+        side,
+        *,
+        interaction: discord.Interaction | None = None,
+    ) -> GameRecord:
+        async with self._dice_lock(game_id):
+            game = await self._container.games.play_baccarat(game_id, player_id, side)
+            await self._animate_baccarat_deal(game, interaction=interaction)
+            await self.on_resolved(game, interaction=interaction)
+            return game
+
+    async def handle_tower_pick(
+        self,
+        game_id: str,
+        player_id: str,
+        tile: int,
+        *,
+        interaction: discord.Interaction | None = None,
+    ) -> GameRecord:
+        async with self._dice_lock(game_id):
+            game = await self._container.games.tower_pick(game_id, player_id, tile)
+            if game.status is GameStatus.COMPLETED:
+                await self.on_resolved(game, interaction=interaction)
+            else:
+                await self._edit_listing(
+                    game, await self._embeds.tower_panel(game), interaction=interaction
+                )
+            return game
+
+    async def handle_tower_cashout(
+        self,
+        game_id: str,
+        player_id: str,
+        *,
+        interaction: discord.Interaction | None = None,
+    ) -> GameRecord:
+        async with self._dice_lock(game_id):
+            game = await self._container.games.tower_cashout(game_id, player_id)
             await self.on_resolved(game, interaction=interaction)
             return game
 
@@ -438,6 +528,151 @@ class GameTablePresenter:
                 await self._refund_unposted(game.game_id, "Mines redeal failed")
             raise
 
+    async def handle_house_baccarat_redeal(
+        self,
+        source_game_id: str,
+        player_id: str,
+        *,
+        fiat_amount: Decimal | None = None,
+        baccarat_side=None,
+        interaction: discord.Interaction | None = None,
+    ) -> GameRecord:
+        from casino.domain.enums import CoinSide, GameType
+
+        source = await self._container.games.get(source_game_id)
+        if not source.is_baccarat() or source.status is not GameStatus.COMPLETED:
+            raise GameError("Start a new round from a finished baccarat game.")
+        if player_id != source.creator_id:
+            raise GameError("Only the player can start a new round.")
+        modal = getattr(interaction, "type", None) is discord.InteractionType.modal_submit
+        table_message = getattr(interaction, "message", None) if interaction is not None else None
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=bool(modal))
+        amount = source.bet_amount_fiat if fiat_amount is None else fiat_amount
+        game = await self._container.games.create_game(
+            player1_id=player_id,
+            fiat_amount=amount,
+            side=CoinSide.HEADS,
+            game_type=GameType.BACCARAT,
+            guild_id=source.guild_id,
+        )
+        posted = False
+        try:
+            if source.guild_id:
+                await self._container.games.attach_guild(game.game_id, source.guild_id)
+            panel = await self._embeds.house_baccarat_panel(game)
+            posted = await self._edit_redeal_table(
+                source, panel, interaction=interaction, table_message=table_message
+            )
+            if not posted:
+                await self._refund_unposted(game.game_id, "Baccarat table update failed")
+                raise GameError("Could not update the baccarat table. Your bet was returned.")
+            channel_id = source.channel_id
+            message_id = source.message_id
+            if table_message is not None:
+                channel_id = str(table_message.channel.id)
+                message_id = str(table_message.id)
+            if channel_id and message_id:
+                await self._container.games.attach_listing(game.game_id, channel_id, message_id)
+                game.channel_id = channel_id
+                game.message_id = message_id
+            if interaction is not None:
+                await self.send_fairness_lock(interaction, game)
+            return game
+        except GameError:
+            raise
+        except Exception:
+            if not posted:
+                await self._refund_unposted(game.game_id, "Baccarat redeal failed")
+            raise
+
+    async def handle_tower_redeal(
+        self,
+        source_game_id: str,
+        player_id: str,
+        *,
+        fiat_amount: Decimal | None = None,
+        tower_difficulty: str | None = None,
+        interaction: discord.Interaction | None = None,
+    ) -> GameRecord:
+        from casino.domain.enums import CoinSide, GameType
+
+        source = await self._container.games.get(source_game_id)
+        if not source.is_tower() or source.status is not GameStatus.COMPLETED:
+            raise GameError("Start a new round from a finished tower game.")
+        if player_id != source.creator_id:
+            raise GameError("Only the player can start a new round.")
+        modal = getattr(interaction, "type", None) is discord.InteractionType.modal_submit
+        table_message = getattr(interaction, "message", None) if interaction is not None else None
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=bool(modal))
+        amount = source.bet_amount_fiat if fiat_amount is None else fiat_amount
+        difficulty = source.tower_difficulty if tower_difficulty is None else tower_difficulty
+        game = await self._container.games.create_game(
+            player1_id=player_id,
+            fiat_amount=amount,
+            side=CoinSide.HEADS,
+            game_type=GameType.TOWER,
+            guild_id=source.guild_id,
+            tower_difficulty=difficulty,
+        )
+        posted = False
+        try:
+            if source.guild_id:
+                await self._container.games.attach_guild(game.game_id, source.guild_id)
+            panel = await self._embeds.tower_panel(game)
+            posted = await self._edit_redeal_table(
+                source, panel, interaction=interaction, table_message=table_message
+            )
+            if not posted:
+                await self._refund_unposted(game.game_id, "Tower table update failed")
+                raise GameError("Could not update the tower. Your bet was returned.")
+            channel_id = source.channel_id
+            message_id = source.message_id
+            if table_message is not None:
+                channel_id = str(table_message.channel.id)
+                message_id = str(table_message.id)
+            if channel_id and message_id:
+                await self._container.games.attach_listing(game.game_id, channel_id, message_id)
+                game.channel_id = channel_id
+                game.message_id = message_id
+            if game.status is GameStatus.COMPLETED:
+                await self.on_resolved(game, interaction=interaction)
+            if interaction is not None:
+                await self.send_fairness_lock(interaction, game)
+            return game
+        except GameError:
+            raise
+        except Exception:
+            if not posted:
+                await self._refund_unposted(game.game_id, "Tower redeal failed")
+            raise
+
+    async def _animate_baccarat_deal(
+        self,
+        game: GameRecord,
+        *,
+        interaction: discord.Interaction | None = None,
+    ) -> None:
+        from casino.domain.baccarat import BaccaratDeal, baccarat_deal_frames
+
+        deal = BaccaratDeal(
+            player_cards=tuple(game.baccarat_player_cards),
+            banker_cards=tuple(game.baccarat_banker_cards),
+        )
+        frames = baccarat_deal_frames(deal)
+        if not frames:
+            return
+        for player_cards, banker_cards in frames:
+            panel = await self._embeds.house_baccarat_panel(
+                game,
+                player_cards=list(player_cards),
+                banker_cards=list(banker_cards),
+                show_result=False,
+            )
+            await self._edit_listing(game, panel, interaction=interaction)
+            await asyncio.sleep(1)
+
     async def _animate_blackjack_dealer(
         self,
         game: GameRecord,
@@ -532,6 +767,24 @@ class GameTablePresenter:
         if game.is_mines():
             await self._edit_listing(
                 game, await self._embeds.mines_panel(game), interaction=interaction
+            )
+            await self._post_outcomes(game)
+            await self._refresh_provably_fair(game)
+            if self._admin_alerts is not None:
+                await self._admin_alerts.on_game_resolved(game)
+            return
+        if game.is_baccarat():
+            await self._edit_listing(
+                game, await self._embeds.house_baccarat_panel(game), interaction=interaction
+            )
+            await self._post_outcomes(game)
+            await self._refresh_provably_fair(game)
+            if self._admin_alerts is not None:
+                await self._admin_alerts.on_game_resolved(game)
+            return
+        if game.is_tower():
+            await self._edit_listing(
+                game, await self._embeds.tower_panel(game), interaction=interaction
             )
             await self._post_outcomes(game)
             await self._refresh_provably_fair(game)

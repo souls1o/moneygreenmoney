@@ -13,9 +13,11 @@ from casino.discord_bot.presentation.modals import (
     ProvablyFairCheckModal,
     BlackjackBetModal,
     BaccaratBetModal,
+    HouseBaccaratBetModal,
     JackpotJoinModal,
     LimboBetModal,
     MinesBetModal,
+    TowerBetModal,
     TargetPickModal,
     TicketCloseModal,
     TicketCreateModal,
@@ -61,7 +63,9 @@ class ComponentRouterCog(commands.Cog):
                 "ticket:",
                 "jp:",
                 "bc:",
+                "bh:",
                 "mn:",
+                "tw:",
             )
         )
         if not handled:
@@ -130,6 +134,24 @@ class ComponentRouterCog(commands.Cog):
             elif (game_id := self._ids.parse_mines_bet(custom_id)):
                 await interaction.response.send_modal(
                     MinesBetModal(self._container, self._embeds, self._errors, game_id)
+                )
+            elif (target := self._ids.parse_house_baccarat_side(custom_id)):
+                await self._on_house_baccarat_side(interaction, target.baccarat_id, target.side)
+            elif (game_id := self._ids.parse_house_baccarat_new(custom_id)):
+                await self._on_house_baccarat_new(interaction, game_id)
+            elif (game_id := self._ids.parse_house_baccarat_bet(custom_id)):
+                await interaction.response.send_modal(
+                    HouseBaccaratBetModal(self._container, self._embeds, self._errors, game_id)
+                )
+            elif (target := self._ids.parse_tower_tile(custom_id)):
+                await self._on_tower_tile(interaction, target.game_id, target.tile)
+            elif (game_id := self._ids.parse_tower_cashout(custom_id)):
+                await self._on_tower_cashout(interaction, game_id)
+            elif (game_id := self._ids.parse_tower_new(custom_id)):
+                await self._on_tower_new(interaction, game_id)
+            elif (game_id := self._ids.parse_tower_bet(custom_id)):
+                await interaction.response.send_modal(
+                    TowerBetModal(self._container, self._embeds, self._errors, game_id)
                 )
             elif (target := self._ids.parse_blackjack(custom_id)):
                 await self._on_blackjack(interaction, target.game_id, target.action)
@@ -392,6 +414,38 @@ class ComponentRouterCog(commands.Cog):
     async def _on_mines_new(self, interaction: discord.Interaction, game_id: str) -> None:
         with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
             await self._tables().handle_mines_redeal(
+                game_id, str(interaction.user.id), interaction=interaction
+            )
+
+    async def _on_house_baccarat_side(self, interaction: discord.Interaction, game_id: str, side) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
+            await self._tables().handle_house_baccarat_side(
+                game_id, str(interaction.user.id), side, interaction=interaction
+            )
+
+    async def _on_house_baccarat_new(self, interaction: discord.Interaction, game_id: str) -> None:
+        with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
+            await self._tables().handle_house_baccarat_redeal(
+                game_id, str(interaction.user.id), interaction=interaction
+            )
+
+    async def _on_tower_tile(self, interaction: discord.Interaction, game_id: str, tile: int) -> None:
+        with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
+            await self._tables().handle_tower_pick(
+                game_id, str(interaction.user.id), tile, interaction=interaction
+            )
+
+    async def _on_tower_cashout(self, interaction: discord.Interaction, game_id: str) -> None:
+        with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
+            await self._tables().handle_tower_cashout(
+                game_id, str(interaction.user.id), interaction=interaction
+            )
+
+    async def _on_tower_new(self, interaction: discord.Interaction, game_id: str) -> None:
+        with LogContext.bind(userId=str(interaction.user.id), gameId=game_id):
+            await self._tables().handle_tower_redeal(
                 game_id, str(interaction.user.id), interaction=interaction
             )
 

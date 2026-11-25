@@ -81,6 +81,12 @@ class FairMines:
 
 
 @dataclass(frozen=True, slots=True)
+class FairTower:
+    digest: str
+    mines: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class FairTarget:
     digest: str
     value: int
@@ -241,6 +247,27 @@ class ProvablyFairService:
             return fair.card
 
         return FairBaccarat(digest=digest, deal=deal_baccarat(draw))
+
+    def resolve_tower(
+        self,
+        server_seed: str,
+        client_seed: str,
+        nonce: int,
+        tiles: int,
+        *,
+        floors: int = 8,
+    ) -> FairTower:
+        mines: list[int] = []
+        digest = ""
+        columns = max(int(tiles), 1)
+        for floor in range(max(int(floors), 0)):
+            digest = hmac.new(
+                server_seed.encode("utf-8"),
+                f"{client_seed}:{nonce}:tower:{floor}".encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            mines.append(int(digest[:8], 16) % columns)
+        return FairTower(digest=digest, mines=tuple(mines))
 
     def resolve_jackpot(
         self,

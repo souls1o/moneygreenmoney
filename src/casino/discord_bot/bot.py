@@ -13,8 +13,10 @@ from casino.discord_bot.cogs.blackjack import BlackjackCog
 from casino.discord_bot.cogs.coinflip import CoinflipCog
 from casino.discord_bot.cogs.dice import DiceCog
 from casino.discord_bot.cogs.invest import InvestCog
+from casino.discord_bot.cogs.baccarat import BaccaratCog
 from casino.discord_bot.cogs.limbo import LimboCog
 from casino.discord_bot.cogs.mines import MinesCog
+from casino.discord_bot.cogs.tower import TowerCog
 from casino.discord_bot.cogs.target import TargetCog
 from casino.discord_bot.cogs.profile import ProfileCog
 from casino.discord_bot.cogs.rain import RainCog
@@ -88,6 +90,8 @@ class CasinoBot(commands.Bot):
         await self.add_cog(TargetCog(self, self.container))
         await self.add_cog(LimboCog(self, self.container))
         await self.add_cog(MinesCog(self, self.container))
+        await self.add_cog(BaccaratCog(self, self.container))
+        await self.add_cog(TowerCog(self, self.container))
         await self.add_cog(ProfileCog(self, self.container))
         await self.add_cog(AffiliateCog(self, self.container))
         await self.add_cog(InvestCog(self, self.container))

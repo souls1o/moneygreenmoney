@@ -183,6 +183,14 @@ class GameRecord:
     mines_tiles: list[int] = field(default_factory=list)
     mines_revealed: list[int] = field(default_factory=list)
     mines_hit: int | None = None
+    baccarat_side: BaccaratSide | None = None
+    baccarat_player_cards: list[BlackjackCard] = field(default_factory=list)
+    baccarat_banker_cards: list[BlackjackCard] = field(default_factory=list)
+    tower_difficulty: str = ""
+    tower_tiles: int = 0
+    tower_layout: list[int] = field(default_factory=list)
+    tower_picks: list[int] = field(default_factory=list)
+    tower_hit: int | None = None
 
     @property
     def bet_amount(self) -> SolAmount:
@@ -227,8 +235,17 @@ class GameRecord:
     def is_baccarat(self) -> bool:
         return self.game_type is GameType.BACCARAT
 
+    def is_tower(self) -> bool:
+        return self.game_type is GameType.TOWER
+
     def is_vs_house(self) -> bool:
-        return self.is_blackjack() or self.is_limbo() or self.is_mines() or self.is_baccarat()
+        return (
+            self.is_blackjack()
+            or self.is_limbo()
+            or self.is_mines()
+            or self.is_baccarat()
+            or self.is_tower()
+        )
 
     def current_blackjack_hand(self) -> BlackjackHand | None:
         if not self.blackjack_player_hands:
@@ -248,6 +265,8 @@ class GameRecord:
             and not self.is_target()
             and not self.is_limbo()
             and not self.is_mines()
+            and not self.is_tower()
+            and not self.is_baccarat()
             and self.status is GameStatus.ACTIVE
         )
 
@@ -277,7 +296,7 @@ class GameRecord:
             return "2v2"
         if self.is_open_ffa():
             return "v".join(["1"] * self.seat_capacity())
-        if self.is_blackjack() or self.is_limbo() or self.is_mines():
+        if self.is_blackjack() or self.is_limbo() or self.is_mines() or self.is_baccarat() or self.is_tower():
             return "vs House"
         if self.is_jackpot():
             count = max(len(self.player_ids()), 1)
@@ -459,7 +478,7 @@ class GameRecord:
         stake = self.stake_usd()
         if not self.winner_ids:
             return Decimal("0")
-        if self.is_limbo() or self.is_mines() or self.is_jackpot() or self.is_baccarat():
+        if self.is_limbo() or self.is_mines() or self.is_jackpot() or self.is_baccarat() or self.is_tower():
             payout = self._vs_house_payout_fiat()
             if self.is_baccarat():
                 return payout - stake
@@ -505,7 +524,7 @@ class GameRecord:
         return bool(humans) and humans <= set(self.ready_ids)
 
     def can_start(self) -> bool:
-        if self.is_target() or self.is_limbo() or self.is_mines():
+        if self.is_target() or self.is_limbo() or self.is_mines() or self.is_tower() or self.is_baccarat():
             return False
         return self.is_full() and self.all_humans_ready() and not self.is_awaiting_rematch_accepts()
 
@@ -573,12 +592,10 @@ class GuildConfigRecord:
             return self.blackjack_outcomes_channel_id
         if game_type is GameType.TARGET:
             return self.target_outcomes_channel_id
-        if game_type is GameType.LIMBO or game_type is GameType.MINES:
+        if game_type in {GameType.LIMBO, GameType.MINES, GameType.TOWER, GameType.BACCARAT}:
             return self.blackjack_outcomes_channel_id
         if game_type is GameType.JACKPOT:
             return self.jackpot_history_channel_id
-        if game_type is GameType.BACCARAT:
-            return self.baccarat_history_channel_id
         return self.coinflip_outcomes_channel_id
 
     def listing_channel_id(self, game_type: GameType) -> str | None:
@@ -588,7 +605,7 @@ class GuildConfigRecord:
             return None
         if game_type is GameType.TARGET:
             return None
-        if game_type is GameType.LIMBO or game_type is GameType.MINES:
+        if game_type in {GameType.LIMBO, GameType.MINES, GameType.TOWER, GameType.BACCARAT}:
             return None
         return self.open_coinflip_channel_id or self.open_games_channel_id
 

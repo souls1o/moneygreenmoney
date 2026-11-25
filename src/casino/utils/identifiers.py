@@ -18,6 +18,7 @@ class IdentifierFactory:
         GameType.MINES: "mn",
         GameType.JACKPOT: "jp",
         GameType.BACCARAT: "bc",
+        GameType.TOWER: "tw",
     }
     LEDGER_PREFIX = "ld"
     TX_PREFIX = "tx"

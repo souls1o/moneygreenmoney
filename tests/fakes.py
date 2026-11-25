@@ -566,6 +566,14 @@ class MemoryGameRepository:
             mines_tiles=list(game.mines_tiles),
             mines_revealed=list(game.mines_revealed),
             mines_hit=game.mines_hit,
+            baccarat_side=game.baccarat_side,
+            baccarat_player_cards=list(game.baccarat_player_cards),
+            baccarat_banker_cards=list(game.baccarat_banker_cards),
+            tower_difficulty=game.tower_difficulty,
+            tower_tiles=game.tower_tiles,
+            tower_layout=list(game.tower_layout),
+            tower_picks=list(game.tower_picks),
+            tower_hit=game.tower_hit,
         )
 
 

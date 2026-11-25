@@ -52,9 +52,17 @@ class WorkerScheduler:
                 continue
 
     async def _run_forever(self, name: str, callback: Callable[[], Awaitable[None]]) -> None:
-        try:
-            await callback()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            self._logger.exception("worker_loop_failed", worker=name)
+        delay = 1.0
+        while not self._stopping.is_set():
+            try:
+                await callback()
+                delay = 1.0
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._logger.exception("worker_loop_failed", worker=name)
+            try:
+                await asyncio.wait_for(self._stopping.wait(), timeout=delay)
+            except TimeoutError:
+                delay = min(delay * 2, 30.0)
+                continue

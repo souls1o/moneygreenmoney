@@ -90,6 +90,7 @@ class FixedRandomService:
         targets: list[int] | None = None,
         limbos: list | None = None,
         mines: list | None = None,
+        tower: list | None = None,
     ) -> None:
         self._side = side
         self._dice_pairs = dice_pairs
@@ -98,6 +99,7 @@ class FixedRandomService:
         self._targets = targets
         self._limbos = limbos
         self._mines = mines
+        self._tower = tower
         self._nonce_seq = 0
 
     def commit(self) -> FairCommitment:
@@ -142,6 +144,33 @@ class FixedRandomService:
 
         planted = tuple(self._mines or list(range(int(mine_count))))
         return FairMines(digest="fixed-mines", mines=planted)
+
+    def resolve_tower(
+        self,
+        server_seed: str,
+        client_seed: str,
+        nonce: int,
+        tiles: int,
+        *,
+        floors: int = 8,
+    ):
+        from casino.utils.rng import FairTower
+
+        planted = tuple(self._tower or [1] * int(floors))
+        return FairTower(digest="fixed-tower", mines=planted)
+
+    def resolve_baccarat(self, server_seed: str, client_seed: str, nonce: int):
+        from casino.domain.baccarat import deal_baccarat_from_cards
+        from casino.domain.blackjack import BlackjackCard
+        from casino.utils.rng import FairBaccarat
+
+        cards = self._cards or [
+            BlackjackCard(rank=8, suit=0),
+            BlackjackCard(rank=9, suit=1),
+            BlackjackCard(rank=9, suit=2),
+            BlackjackCard(rank=9, suit=3),
+        ]
+        return FairBaccarat(digest="fixed-baccarat", deal=deal_baccarat_from_cards(list(cards)))
 
     def resolve_limbo(self, server_seed: str, client_seed: str, nonce: int):
         from casino.utils.rng import FairLimbo

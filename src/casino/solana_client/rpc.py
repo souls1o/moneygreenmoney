@@ -264,8 +264,16 @@ class SolanaRpcGateway:
         )
         if response.value is None:
             return None
-        inner = getattr(response.value, "transaction", response.value)
-        return self._codec.as_dict(inner)
+        payload = self._codec.as_dict(response.value)
+        inner = payload.get("transaction") if isinstance(payload, dict) else None
+        if (
+            isinstance(inner, dict)
+            and inner.get("meta")
+            and isinstance(inner.get("transaction"), dict)
+            and "meta" not in payload
+        ):
+            return inner
+        return payload
 
     async def get_rent_exempt_lamports(self, data_len: int = 0) -> int:
         try:

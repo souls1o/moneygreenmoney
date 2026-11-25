@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from casino.domain.blackjack import BlackjackCard
+from casino.errors import GameError
 
 BACCARAT_SECONDS = 30
 BACCARAT_REVEAL_SECONDS = 10
@@ -53,6 +54,14 @@ class BaccaratDeal:
         if banker > player:
             return BaccaratSide.BANKER
         return BaccaratSide.TIE
+
+
+def parse_baccarat_side(value: object) -> BaccaratSide:
+    raw = str(value or "").strip().lower()
+    try:
+        return BaccaratSide(raw)
+    except ValueError as exc:
+        raise GameError("Choose Player, Banker, or Tie.") from exc
 
 
 def baccarat_card_value(card: BlackjackCard) -> int:
@@ -138,6 +147,35 @@ def profit_lamports(stake_lamports: int, side: BaccaratSide) -> int:
     if side is BaccaratSide.BANKER:
         return (stake * (10_000 - BANKER_COMMISSION_BPS)) // 10_000
     return stake * TIE_PAYS_TO_ONE
+
+
+def baccarat_deal_frames(deal: BaccaratDeal) -> list[tuple[tuple[BlackjackCard, ...], tuple[BlackjackCard, ...]]]:
+    player: list[BlackjackCard] = []
+    banker: list[BlackjackCard] = []
+    frames: list[tuple[tuple[BlackjackCard, ...], tuple[BlackjackCard, ...]]] = []
+
+    def snap() -> None:
+        frames.append((tuple(player), tuple(banker)))
+
+    if deal.player_cards:
+        player.append(deal.player_cards[0])
+        snap()
+    if deal.banker_cards:
+        banker.append(deal.banker_cards[0])
+        snap()
+    if len(deal.player_cards) > 1:
+        player.append(deal.player_cards[1])
+        snap()
+    if len(deal.banker_cards) > 1:
+        banker.append(deal.banker_cards[1])
+        snap()
+    if len(deal.player_cards) > 2:
+        player.append(deal.player_cards[2])
+        snap()
+    if len(deal.banker_cards) > 2:
+        banker.append(deal.banker_cards[2])
+        snap()
+    return frames
 
 
 def payout_lamports(stake_lamports: int, side: BaccaratSide, outcome: BaccaratSide) -> tuple[BaccaratBetResult, int]:

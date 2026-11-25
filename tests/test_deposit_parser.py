@@ -1,4 +1,6 @@
-from casino.solana_client.deposit_parser import SolanaDepositParser
+import pytest
+
+from casino.solana_client.deposit_parser import IncompleteDepositTransaction, SolanaDepositParser
 
 
 class TestSolanaDepositParser:
@@ -48,3 +50,78 @@ class TestSolanaDepositParser:
         assert parsed is not None
         assert parsed.lamports == 1_000_000
         assert parsed.destination == destination
+
+    def test_parses_nested_confirmed_wrapper(self) -> None:
+        parser = SolanaDepositParser()
+        destination = "Dest11111111111111111111111111111111111111"
+        payload = {
+            "slot": 1,
+            "transaction": {
+                "transaction": {
+                    "message": {
+                        "accountKeys": ["Sender111111111111111111111111111111111111", destination],
+                        "instructions": [],
+                    }
+                },
+                "meta": {"err": None, "preBalances": [5_000_000, 1_000_000], "postBalances": [4_000_000, 2_000_000]},
+            },
+        }
+        parsed = parser.parse(payload, destination=destination, signature="sig")
+        assert parsed is not None
+        assert parsed.lamports == 1_000_000
+
+    def test_parses_system_transfer_instruction_when_balances_missing(self) -> None:
+        parser = SolanaDepositParser()
+        destination = "Dest11111111111111111111111111111111111111"
+        payload = {
+            "meta": {"err": None},
+            "transaction": {
+                "message": {
+                    "accountKeys": ["Sender111111111111111111111111111111111111", destination],
+                    "instructions": [
+                        {
+                            "program": "system",
+                            "parsed": {
+                                "type": "transfer",
+                                "info": {
+                                    "source": "Sender111111111111111111111111111111111111",
+                                    "destination": destination,
+                                    "lamports": 2_500_000,
+                                },
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+        parsed = parser.parse(payload, destination=destination, signature="sig")
+        assert parsed is not None
+        assert parsed.lamports == 2_500_000
+        assert parsed.source == "Sender111111111111111111111111111111111111"
+
+    def test_source_is_the_account_that_lost_lamports(self) -> None:
+        parser = SolanaDepositParser()
+        destination = "Dest11111111111111111111111111111111111111"
+        super_wallet = "Super1111111111111111111111111111111111111"
+        sender = "Sender111111111111111111111111111111111111"
+        payload = {
+            "meta": {
+                "err": None,
+                "preBalances": [9_000_000, 1_000_000, 8_000_000],
+                "postBalances": [9_000_000, 3_000_000, 6_000_000],
+            },
+            "transaction": {"message": {"accountKeys": [super_wallet, destination, sender], "instructions": []}},
+        }
+        parsed = parser.parse(payload, destination=destination, signature="sig")
+        assert parsed is not None
+        assert parsed.source == sender
+
+    def test_incomplete_payload_raises(self) -> None:
+        parser = SolanaDepositParser()
+        destination = "Dest11111111111111111111111111111111111111"
+        payload = {
+            "meta": {"err": None},
+            "transaction": {"message": {"accountKeys": [destination], "instructions": []}},
+        }
+        with pytest.raises(IncompleteDepositTransaction):
+            parser.parse(payload, destination=destination, signature="sig")

@@ -493,6 +493,86 @@ class MinesBetModal(discord.ui.Modal, title="Change bet"):
                 await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
 
 
+class HouseBaccaratBetModal(discord.ui.Modal, title="Change bet"):
+    amount = discord.ui.TextInput(label="New bet amount", placeholder="5", max_length=16)
+
+    def __init__(
+        self,
+        container: AppContainer,
+        embeds: EmbedFactory,
+        errors: DiscordErrorPresenter,
+        game_id: str,
+    ) -> None:
+        super().__init__()
+        self._container = container
+        self._embeds = embeds
+        self._errors = errors
+        self._game_id = game_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from casino.discord_bot.bot import CasinoBot
+
+        try:
+            fiat = self._container.validation.parse_fiat_amount(str(self.amount.value))
+            bot = interaction.client
+            if not isinstance(bot, CasinoBot):
+                raise RuntimeError("Casino bot is not ready.")
+            await bot.tables.handle_house_baccarat_redeal(
+                self._game_id,
+                str(interaction.user.id),
+                fiat_amount=fiat,
+                interaction=interaction,
+            )
+        except Exception as exc:
+            panel = self._errors.panel_for(exc)
+            if interaction.response.is_done():
+                await interaction.followup.send(**panel.send_kwargs(ephemeral=True))
+            else:
+                await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+
+
+class TowerBetModal(discord.ui.Modal, title="Change bet"):
+    amount = discord.ui.TextInput(label="New bet amount", placeholder="5", max_length=16)
+    difficulty = discord.ui.TextInput(label="Difficulty (easy, medium, hard)", placeholder="easy", max_length=8)
+
+    def __init__(
+        self,
+        container: AppContainer,
+        embeds: EmbedFactory,
+        errors: DiscordErrorPresenter,
+        game_id: str,
+    ) -> None:
+        super().__init__()
+        self._container = container
+        self._embeds = embeds
+        self._errors = errors
+        self._game_id = game_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        from casino.discord_bot.bot import CasinoBot
+        from casino.domain.tower import parse_tower_difficulty
+
+        try:
+            fiat = self._container.validation.parse_fiat_amount(str(self.amount.value))
+            difficulty = parse_tower_difficulty(str(self.difficulty.value))
+            bot = interaction.client
+            if not isinstance(bot, CasinoBot):
+                raise RuntimeError("Casino bot is not ready.")
+            await bot.tables.handle_tower_redeal(
+                self._game_id,
+                str(interaction.user.id),
+                fiat_amount=fiat,
+                tower_difficulty=difficulty,
+                interaction=interaction,
+            )
+        except Exception as exc:
+            panel = self._errors.panel_for(exc)
+            if interaction.response.is_done():
+                await interaction.followup.send(**panel.send_kwargs(ephemeral=True))
+            else:
+                await interaction.response.send_message(**panel.send_kwargs(ephemeral=True))
+
+
 class BaccaratBetModal(discord.ui.Modal, title="Baccarat bet"):
     amount = discord.ui.TextInput(label="Amount", placeholder="5", max_length=16)
 

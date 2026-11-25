@@ -18,7 +18,7 @@ from casino.solana_client.logs_subscribe import LogNotification, logs_subscribe_
 # Helius free: 1,000 subscriptions per WebSocket connection.
 MAX_LOG_SUBSCRIPTIONS = 1_000
 SUBSCRIBE_REFRESH_SECONDS = 2.0
-INGEST_RETRY_DELAYS = (0.05, 0.08, 0.12, 0.18, 0.25, 0.35, 0.5, 0.75, 1.0)
+INGEST_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
 
 
 class DepositStreamWorker:
@@ -87,6 +87,10 @@ class DepositStreamWorker:
                 address=address,
                 error=str(last_error),
             )
+            try:
+                await self._deposits.sweep_target(target)
+            except Exception:
+                self._logger.exception("deposit_stream_sweep_failed", address=address)
 
     async def _run_session(self) -> None:
         url = self._settings.resolved_solana_ws_url()

@@ -186,6 +186,14 @@ class DocumentMapper:
             "minesTiles": [int(tile) for tile in game.mines_tiles],
             "minesRevealed": [int(tile) for tile in game.mines_revealed],
             "minesHit": game.mines_hit,
+            "baccaratSide": game.baccarat_side.value if game.baccarat_side is not None else None,
+            "baccaratPlayerCards": [self._blackjack_card_to_document(card) for card in game.baccarat_player_cards],
+            "baccaratBankerCards": [self._blackjack_card_to_document(card) for card in game.baccarat_banker_cards],
+            "towerDifficulty": game.tower_difficulty,
+            "towerTiles": int(game.tower_tiles),
+            "towerLayout": [int(tile) for tile in game.tower_layout],
+            "towerPicks": [int(tile) for tile in game.tower_picks],
+            "towerHit": game.tower_hit,
         }
 
     def game_from_document(self, document: dict[str, Any]) -> GameRecord:
@@ -276,6 +284,14 @@ class DocumentMapper:
             mines_tiles=[int(tile) for tile in (document.get("minesTiles") or [])],
             mines_revealed=[int(tile) for tile in (document.get("minesRevealed") or [])],
             mines_hit=int(document["minesHit"]) if document.get("minesHit") is not None else None,
+            baccarat_side=BaccaratSide(document["baccaratSide"]) if document.get("baccaratSide") else None,
+            baccarat_player_cards=self._blackjack_cards_from_document(document.get("baccaratPlayerCards")),
+            baccarat_banker_cards=self._blackjack_cards_from_document(document.get("baccaratBankerCards")),
+            tower_difficulty=str(document.get("towerDifficulty") or ""),
+            tower_tiles=int(document.get("towerTiles") or 0),
+            tower_layout=[int(tile) for tile in (document.get("towerLayout") or [])],
+            tower_picks=[int(tile) for tile in (document.get("towerPicks") or [])],
+            tower_hit=int(document["towerHit"]) if document.get("towerHit") is not None else None,
         )
 
     def _blackjack_card_to_document(self, card: BlackjackCard) -> dict[str, Any]:

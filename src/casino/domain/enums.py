@@ -12,6 +12,7 @@ class GameType(StrEnum):
     MINES = "mines"
     JACKPOT = "jackpot"
     BACCARAT = "baccarat"
+    TOWER = "tower"
 
 
 class GameMode(StrEnum):
@@ -126,14 +127,18 @@ class GuildConfigSlot(StrEnum):
     def outcomes_for(cls, game_type: GameType) -> GuildConfigSlot:
         if game_type is GameType.DICE:
             return cls.DICE_OUTCOMES
-        if game_type is GameType.BLACKJACK or game_type is GameType.LIMBO or game_type is GameType.MINES:
+        if game_type in {
+            GameType.BLACKJACK,
+            GameType.LIMBO,
+            GameType.MINES,
+            GameType.TOWER,
+            GameType.BACCARAT,
+        }:
             return cls.BLACKJACK_OUTCOMES
         if game_type is GameType.TARGET:
             return cls.TARGET_OUTCOMES
         if game_type is GameType.JACKPOT:
             return cls.JACKPOT_HISTORY
-        if game_type is GameType.BACCARAT:
-            return cls.BACCARAT_HISTORY
         return cls.COINFLIP_OUTCOMES
 
     @classmethod

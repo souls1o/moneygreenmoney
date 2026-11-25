@@ -15,7 +15,7 @@ from casino.services.deposit_service import (
 )
 from casino.services.ledger_service import LedgerService
 from casino.services.user_service import UserService
-from casino.solana_client.deposit_parser import ParsedIncomingTransfer
+from casino.solana_client.deposit_parser import ParsedIncomingTransfer, SolanaDepositParser
 from casino.utils.identifiers import IdentifierFactory
 from casino.utils.text import TextNormalizer
 from tests.conftest import FrozenClock, StubPriceService, StubSettings
@@ -236,6 +236,40 @@ async def test_ingest_waits_when_transaction_is_missing() -> None:
             "sig-missing",
             DepositWatchTarget(address=user.deposit_address or "", user_id="1"),
         )
+
+
+@pytest.mark.asyncio
+async def test_ingest_sweeps_even_when_signature_is_not_an_incoming_transfer() -> None:
+    service, users_repo, _house, _ledger, rpc, clock = _service()
+    user = UserRecord(
+        discord_id="1",
+        deposit_memo="BBTEST",
+        deposit_address="Player111111111111111111111111111111111111",
+        created_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    users_repo.users["1"] = user
+
+    async def get_parsed_transaction(_signature: str):
+        return {
+            "meta": {"err": None, "preBalances": [1_000_000, 1_000_000], "postBalances": [1_000_000, 1_000_000]},
+            "transaction": {
+                "message": {
+                    "accountKeys": [user.deposit_address, "Other11111111111111111111111111111111111111"],
+                    "instructions": [],
+                }
+            },
+        }
+
+    service._rpc.get_parsed_transaction = get_parsed_transaction  # type: ignore[method-assign]
+    service._parser = SolanaDepositParser()
+    credited = await service.ingest_signature(
+        "sig-outgoing",
+        DepositWatchTarget(address=user.deposit_address or "", user_id="1"),
+    )
+    assert credited is None
+    await asyncio.gather(*list(service._sweep_tasks), return_exceptions=True)
+    assert rpc.swept == ["player-1"]
 
 
 @pytest.mark.asyncio

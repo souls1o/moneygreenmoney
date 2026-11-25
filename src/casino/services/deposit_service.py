@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from solana.rpc.commitment import Confirmed, Processed
+from solana.rpc.commitment import Confirmed, Finalized, Processed
 
 from casino.db.unit_of_work import UnitOfWorkFactory
 from casino.domain.enums import LedgerEntryType, TransactionType
@@ -16,7 +16,11 @@ from casino.services.custody_service import CustodyService
 from casino.services.investor_service import InvestorService
 from casino.services.price_service import PriceService
 from casino.services.user_service import UserService
-from casino.solana_client.deposit_parser import ParsedIncomingTransfer, SolanaDepositParser
+from casino.solana_client.deposit_parser import (
+    IncompleteDepositTransaction,
+    ParsedIncomingTransfer,
+    SolanaDepositParser,
+)
 from casino.solana_client.rpc import SolanaRpcGateway
 from casino.utils.text import TextNormalizer
 
@@ -103,6 +107,7 @@ class DepositService:
             return None
         parsed = await self._incoming_or_pending(signature, target.address)
         if parsed is None:
+            self._schedule_sweep(target)
             return None
         if self._is_internal_transfer(parsed):
             self._logger.info(
@@ -112,17 +117,21 @@ class DepositService:
                 destination=parsed.destination,
                 amountLamports=parsed.lamports,
             )
+            self._schedule_sweep(target)
             return None
         if target.is_house:
             await self.credit_house(parsed)
             return None
         user = await self._users.get_by_deposit_address(target.address)
+        if user is None and target.user_id:
+            user = await self._users.get(target.user_id)
         if user is None:
             self._logger.warning(
                 "deposit_address_unmatched",
                 address=target.address,
                 txSignature=parsed.signature,
             )
+            self._schedule_sweep(target)
             return None
         try:
             credited = await self.credit_parsed(user, parsed)
@@ -262,13 +271,18 @@ class DepositService:
         if payload is None:
             self._logger.info("deposit_transaction_pending", txSignature=signature, address=destination)
             raise DepositTransactionPendingError(signature)
-        return self._parser.parse(payload, destination=destination, signature=signature)
+        try:
+            return self._parser.parse(payload, destination=destination, signature=signature)
+        except IncompleteDepositTransaction as exc:
+            self._logger.info("deposit_transaction_incomplete", txSignature=signature, address=destination)
+            raise DepositTransactionPendingError(signature) from exc
 
     async def _fetch_parsed_transaction(self, signature: str) -> dict | None:
-        payload = await self._rpc_parsed_transaction(signature, Processed)
-        if payload is not None:
-            return payload
-        return await self._rpc_parsed_transaction(signature, Confirmed)
+        for commitment in (Processed, Confirmed, Finalized):
+            payload = await self._rpc_parsed_transaction(signature, commitment)
+            if payload is not None:
+                return payload
+        return None
 
     async def _rpc_parsed_transaction(self, signature: str, commitment) -> dict | None:
         try:

@@ -17,6 +17,7 @@ from casino.domain.baccarat import BaccaratSide, baccarat_total
 from casino.domain.blackjack import BlackjackAction, BlackjackOutcome, hand_total
 from casino.domain.limbo import LIMBO_START, format_limbo_multiplier
 from casino.domain.mines import MINES_TILES, format_mines_multiplier, mines_multiplier
+from casino.domain.tower import TOWER_FLOORS, format_tower_multiplier, tower_multiplier
 from casino.domain.rain import RAIN_JOIN_STATUS, RainJoinEligibility
 from casino.domain.investor import InvestorPosition
 from casino.domain.enums import (
@@ -174,6 +175,10 @@ class EmbedFactory:
             return self.limbo_table(game)
         if game.is_mines():
             return self.mines_table(game)
+        if game.is_baccarat():
+            return self.house_baccarat_table(game)
+        if game.is_tower():
+            return self.tower_table(game)
         if game.is_target():
             return self.target_table(game)
         mode_label = self._mode_label(game)
@@ -437,6 +442,200 @@ class EmbedFactory:
             "custom_id": self._ids.mines_tile(game.game_id, index),
             "disabled": (not playing) or opened,
         }
+
+    def _tower_floor_cells(self, game: GameRecord, floor: int, tiles: int, *, playing: bool) -> str:
+        cells: list[str] = []
+        climbed = len(game.tower_picks)
+        mine = game.tower_layout[floor] if floor < len(game.tower_layout) else None
+        pick = game.tower_picks[floor] if floor < climbed else None
+        finished = game.status is GameStatus.COMPLETED
+        current = playing and floor == climbed
+        for index in range(tiles):
+            if pick is not None and pick == index and mine == index:
+                cells.append("💣")
+            elif pick is not None and pick == index:
+                cells.append("💎")
+            elif finished and mine == index:
+                cells.append("💣")
+            elif current:
+                cells.append("▣")
+            else:
+                cells.append("□")
+        return " ".join(cells)
+
+    async def house_baccarat_panel(
+        self,
+        game: GameRecord,
+        *,
+        player_cards: list | None = None,
+        banker_cards: list | None = None,
+        show_result: bool | None = None,
+    ) -> CasinoPanel:
+        conceal = show_result is False
+        return self.house_baccarat_table(
+            game,
+            player_cards=player_cards,
+            banker_cards=banker_cards,
+            show_result=show_result,
+            balance_text=await self._blackjack_balance_line(game, conceal_payout=conceal),
+        )
+
+    def house_baccarat_table(
+        self,
+        game: GameRecord,
+        *,
+        actions: bool = True,
+        balance_text: str = "",
+        history: bool = False,
+        player_cards: list | None = None,
+        banker_cards: list | None = None,
+        show_result: bool | None = None,
+    ) -> CasinoPanel:
+        waiting = game.status is GameStatus.ACTIVE and game.baccarat_side is None
+        finished = game.status is GameStatus.COMPLETED
+        reveal = finished if show_result is None else show_result
+        shown_player = list(player_cards) if player_cards is not None else list(game.baccarat_player_cards)
+        shown_banker = list(banker_cards) if banker_cards is not None else list(game.baccarat_banker_cards)
+        if waiting:
+            shown_player = []
+            shown_banker = []
+        side = game.baccarat_side.label() if game.baccarat_side is not None else "—"
+        player = " ".join(card.label for card in shown_player) or "—"
+        banker = " ".join(card.label for card in shown_banker) or "—"
+        player_total = baccarat_total(shown_player) if shown_player else 0
+        banker_total = baccarat_total(shown_banker) if shown_banker else 0
+        if waiting:
+            lines = [
+                f"{self._mention(game.creator_id)} · pick **Player**, **Banker**, or **Tie**.",
+                "Player **1:1**. Banker **0.95:1**. Tie **8:1**. The wager is taken when you pick.",
+            ]
+        else:
+            lines = [f"{self._mention(game.creator_id)} bet **{side}**."]
+        if reveal and finished:
+            change = self._player_balance_change(game, game.creator_id)
+            if game.winner_ids == [game.creator_id]:
+                outcome = "Win"
+            elif not game.winner_ids:
+                outcome = "Push"
+            else:
+                outcome = "Loss"
+            lines.append(f"**{outcome}.**  {change}")
+        if balance_text:
+            lines.append(balance_text)
+        title = self._vs_house_title(game, "Baccarat") if history and finished else "Baccarat"
+        builder = (
+            self.builder(title, description="\n".join(lines))
+            .persistent()
+            .field("Player", f"{player}  ·  **{player_total}**")
+            .field("Banker", f"{banker}  ·  **{banker_total}**")
+            .field("Wager", self._wager_usd(game))
+            .divider()
+        )
+        if actions and waiting:
+            builder.button(
+                "Player",
+                style=discord.ButtonStyle.success,
+                custom_id=self._ids.house_baccarat_player(game.game_id),
+            ).button(
+                "Banker",
+                style=discord.ButtonStyle.primary,
+                custom_id=self._ids.house_baccarat_banker(game.game_id),
+            ).button(
+                "Tie",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.house_baccarat_tie(game.game_id),
+            )
+        elif actions and reveal and finished:
+            builder.button(
+                "New Round",
+                style=discord.ButtonStyle.success,
+                custom_id=self._ids.house_baccarat_new(game.game_id),
+            ).button(
+                "Change Bet",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.house_baccarat_bet(game.game_id),
+            ).button(
+                "Verify",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.verify_game(game.game_id),
+            )
+        elif actions is False and finished:
+            builder.button(
+                "Verify",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.verify_game(game.game_id),
+            )
+        return builder.build()
+
+    async def tower_panel(self, game: GameRecord) -> CasinoPanel:
+        return self.tower_table(game, balance_text=await self._blackjack_balance_line(game))
+
+    def tower_table(
+        self,
+        game: GameRecord,
+        *,
+        actions: bool = True,
+        balance_text: str = "",
+        history: bool = False,
+    ) -> CasinoPanel:
+        floors = len(game.tower_picks)
+        playing = game.status is GameStatus.ACTIVE
+        finished = game.status is GameStatus.COMPLETED
+        current = format_tower_multiplier(tower_multiplier(game.tower_tiles or 2, floors))
+        difficulty = game.tower_difficulty.title() if game.tower_difficulty else "Tower"
+        current_floor = min(floors + 1, TOWER_FLOORS) if playing else floors
+        lines = [
+            f"{self._mention(game.creator_id)} · **{difficulty}** · floor **{current_floor}/{TOWER_FLOORS}** · **{current}x**"
+        ]
+        if finished:
+            change = self._player_balance_change(game, game.creator_id)
+            if game.tower_hit is not None:
+                lines.append(f"Hit a bomb on floor **{game.tower_hit + 1}**.  {change}")
+            else:
+                lines.append(f"Cashed out after **{floors}** floor{'s' if floors != 1 else ''}.  {change}")
+        if balance_text:
+            lines.append(balance_text)
+        title = self._vs_house_title(game, "Tower") if history and finished else "Tower"
+        builder = self.builder(title, description="\n".join(lines)).persistent()
+        tiles = max(int(game.tower_tiles), 2)
+        for display in range(TOWER_FLOORS, 0, -1):
+            builder.field(f"Floor {display}", self._tower_floor_cells(game, display - 1, tiles, playing=playing))
+        if playing and floors < TOWER_FLOORS:
+            for index in range(tiles):
+                builder.button(
+                    str(index + 1),
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=self._ids.tower_tile(game.game_id, index),
+                )
+        builder.field("Wager", self._wager_usd(game)).divider()
+        if actions and playing:
+            builder.button(
+                "Cash out",
+                style=discord.ButtonStyle.success,
+                custom_id=self._ids.tower_cashout(game.game_id),
+                disabled=not game.tower_picks,
+            )
+        elif actions and finished:
+            builder.button(
+                "New Round",
+                style=discord.ButtonStyle.success,
+                custom_id=self._ids.tower_new(game.game_id),
+            ).button(
+                "Change Bet",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.tower_bet(game.game_id),
+            ).button(
+                "Verify",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.verify_game(game.game_id),
+            )
+        elif actions is False and finished:
+            builder.button(
+                "Verify",
+                style=discord.ButtonStyle.secondary,
+                custom_id=self._ids.verify_game(game.game_id),
+            )
+        return builder.build()
 
     def jackpot_table(self, jackpot: JackpotRecord, *, history: bool = False) -> CasinoPanel:
         from casino.domain.jackpot import max_join_lamports, win_chance
@@ -811,6 +1010,10 @@ class EmbedFactory:
             return self.limbo_table(game, actions=False, history=True)
         if game.is_mines():
             return self.mines_table(game, actions=False, history=True)
+        if game.is_baccarat():
+            return self.house_baccarat_table(game, actions=False, history=True)
+        if game.is_tower():
+            return self.tower_table(game, actions=False, history=True)
         if game.is_target():
             return self.target_table(game)
         title = self._game_title(game)
@@ -908,7 +1111,7 @@ class EmbedFactory:
         builder = self.builder(
             "Provably Fair",
             description=(
-                "Blackjack, limbo, and mines lock `SHA256(server_seed)` on your account **before** "
+                "Blackjack, limbo, mines, baccarat, and tower lock `SHA256(server_seed)` on your account **before** "
                 "the next bet. Your client seed is yours — randomize it in `/settings` any time "
                 "before you play. After the round, Verify reveals the server seed so SHA-256 must "
                 "match the hash you already had.\n\n"
@@ -923,6 +1126,8 @@ class EmbedFactory:
                 "The first 8 hex characters of the HMAC pick a card 0–51.\n"
                 "• **Limbo** — HMAC of `clientSeed:nonce:limbo`. First 13 hex characters become the crash.\n"
                 "• **Mines** — HMAC of `clientSeed:nonce:mines:drawIndex` plants each mine on the 5×5 board.\n"
+                "• **Baccarat** — HMAC of `clientSeed:nonce:shoe:drawIndex` deals Player then Banker cards.\n"
+                "• **Tower** — HMAC of `clientSeed:nonce:tower:floorIndex` plants the bomb on each floor.\n"
                 "• **Target** — paste nonce as `gameNonce:target:0` for the draw (1–999). "
                 "House picks use `gameNonce:target:1`."
             ),
@@ -939,6 +1144,10 @@ class EmbedFactory:
             return self._limbo_fair(game, revealed)
         if game.is_mines():
             return self._mines_fair(game, revealed)
+        if game.is_baccarat():
+            return self._house_baccarat_fair(game, revealed)
+        if game.is_tower():
+            return self._tower_fair(game, revealed)
         if game.is_target():
             return self._target_fair(game, revealed)
         return self._coinflip_fair(game, revealed)
@@ -1151,6 +1360,13 @@ class EmbedFactory:
         if game.is_mines():
             count = f" {game.mines_count}" if game.mines_count else ""
             return f"Mines{count} vs House"
+        if game.is_baccarat():
+            if game.baccarat_side is not None:
+                return f"Baccarat {game.baccarat_side.label()} vs House"
+            return "Baccarat vs House"
+        if game.is_tower():
+            difficulty = game.tower_difficulty.title() if game.tower_difficulty else "Tower"
+            return f"Tower {difficulty} vs House"
         if game.is_blackjack():
             return "Blackjack vs House"
         if game.is_jackpot():
@@ -2224,6 +2440,74 @@ class EmbedFactory:
             .field("Game nonce", str(game.nonce))
             .divider()
             .field("Mines", mines)
+            .button("Open verifier", url=self._container.settings.verify_page_url())
+            .build()
+        )
+
+    def _house_baccarat_fair(self, game: GameRecord, revealed: bool) -> CasinoPanel:
+        seed = f"`{game.server_seed}`" if revealed and game.server_seed else "Hidden until the round completes"
+        player = " ".join(card.label for card in game.baccarat_player_cards) if revealed else "Hidden"
+        banker = " ".join(card.label for card in game.baccarat_banker_cards) if revealed else "Hidden"
+        side = game.baccarat_side.label() if game.baccarat_side is not None else "—"
+        description = (
+            f"**{self._game_title(game)}** — {side} vs house.\n\n"
+            "**What each number means**\n"
+            "• **Server seed hash** — shown when the round starts.\n"
+            "• **Server seed** — revealed when the cards are dealt.\n"
+            "• **Client seed** — your `/settings` client seed for this round.\n"
+            "• **Game nonce** — this round's counter.\n\n"
+            "**How to replay the deal**\n"
+            f"HMAC-SHA256(server_seed, `{game.client_seed}:{game.nonce}:shoe:drawIndex`). "
+            "Cards are drawn Player, Banker, Player, Banker, then third cards if punto banco rules require them."
+        )
+        return (
+            self.builder("Provably fair check", description=description)
+            .divider()
+            .field("Server seed hash", f"`{game.server_seed_hash}`")
+            .divider()
+            .field("Server seed", seed)
+            .divider()
+            .field("Client seed", self._client_seed_display(game))
+            .divider()
+            .field("Game nonce", str(game.nonce))
+            .divider()
+            .field("Player", player)
+            .divider()
+            .field("Banker", banker)
+            .button("Open verifier", url=self._container.settings.verify_page_url())
+            .build()
+        )
+
+    def _tower_fair(self, game: GameRecord, revealed: bool) -> CasinoPanel:
+        seed = f"`{game.server_seed}`" if revealed and game.server_seed else "Hidden until the round completes"
+        bombs = (
+            ", ".join(str(tile + 1) for tile in game.tower_layout)
+            if revealed and game.tower_layout
+            else "Hidden"
+        )
+        description = (
+            f"**{self._game_title(game)}** — {game.tower_tiles} tiles per floor, 8 floors.\n\n"
+            "**What each number means**\n"
+            "• **Server seed hash** — shown when the tower starts.\n"
+            "• **Server seed** — revealed when the round ends.\n"
+            "• **Client seed** — your `/settings` client seed for this round.\n"
+            "• **Game nonce** — this round's counter.\n\n"
+            "**How to replay the bombs**\n"
+            f"HMAC-SHA256(server_seed, `{game.client_seed}:{game.nonce}:tower:floorIndex`). "
+            f"The first 8 hex characters pick the bomb tile `mod {game.tower_tiles or 4}` on that floor."
+        )
+        return (
+            self.builder("Provably fair check", description=description)
+            .divider()
+            .field("Server seed hash", f"`{game.server_seed_hash}`")
+            .divider()
+            .field("Server seed", seed)
+            .divider()
+            .field("Client seed", self._client_seed_display(game))
+            .divider()
+            .field("Game nonce", str(game.nonce))
+            .divider()
+            .field("Bombs", bombs)
             .button("Open verifier", url=self._container.settings.verify_page_url())
             .build()
         )

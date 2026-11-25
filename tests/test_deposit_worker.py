@@ -123,7 +123,7 @@ async def test_deposit_worker_does_not_skip_pending_transaction() -> None:
     worker = DepositMonitorWorker(deposits, rpc, cursors, clock, settings)  # type: ignore[arg-type]
     await worker.tick()
     cursors.set.assert_not_awaited()
-    deposits.sweep_target.assert_not_awaited()
+    deposits.sweep_target.assert_awaited_once()
 
 
 @pytest.mark.asyncio

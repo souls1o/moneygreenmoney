@@ -22,8 +22,8 @@ def deposit_cursor_name(address: str) -> str:
     return f"solana_deposit:{address}"
 
 
-PAGE_SIZE = 10
-MAX_PAGES = 3
+PAGE_SIZE = 25
+MAX_PAGES = 8
 
 
 class DepositMonitorWorker:
@@ -87,7 +87,6 @@ class DepositMonitorWorker:
             tip = await self._rpc.get_signatures(target.address, limit=PAGE_SIZE)
             seen = set(newest_first)
             newest_first = [signature for signature in tip if signature not in seen] + newest_first
-        caught_up = True
         last_complete: str | None = None
         if newest_first:
             for signature in reversed(newest_first):
@@ -102,7 +101,6 @@ class DepositMonitorWorker:
                             address=target.address,
                         )
                 except DepositTransactionPendingError:
-                    caught_up = False
                     self._logger.info(
                         "deposit_signature_pending",
                         txSignature=signature,
@@ -110,15 +108,13 @@ class DepositMonitorWorker:
                     )
                     break
                 except Exception:
-                    caught_up = False
                     self._logger.exception(
                         "deposit_signature_failed", txSignature=signature, address=target.address
                     )
                     break
             if last_complete is not None:
                 await self._cursors.set(cursor_name, last_complete, self._clock.now())
-        if caught_up:
-            await self._deposits.sweep_target(target)
+        await self._deposits.sweep_target(target)
 
     def _schedule_house_sync(self) -> None:
         if self._house_sync_task is not None and not self._house_sync_task.done():

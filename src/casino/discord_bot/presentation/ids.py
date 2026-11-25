@@ -70,6 +70,15 @@ class ComponentIdCodec:
     MN_CASH = "mn:cash:"
     MN_NEW = "mn:new:"
     MN_BET = "mn:bet:"
+    BH_NEW = "bh:new:"
+    BH_BET = "bh:bet:"
+    BH_PLAYER = "bh:p:"
+    BH_BANKER = "bh:b:"
+    BH_TIE = "bh:t:"
+    TW_TILE = "tw:t:"
+    TW_CASH = "tw:cash:"
+    TW_NEW = "tw:new:"
+    TW_BET = "tw:bet:"
 
     def join(self, game_id: str) -> str:
         return f"{self.JOIN}{game_id}"
@@ -268,6 +277,73 @@ class ComponentIdCodec:
 
     def parse_mines_bet(self, custom_id: str) -> str | None:
         return custom_id[len(self.MN_BET) :] if custom_id.startswith(self.MN_BET) else None
+
+    def house_baccarat_new(self, game_id: str) -> str:
+        return f"{self.BH_NEW}{game_id}"
+
+    def house_baccarat_bet(self, game_id: str) -> str:
+        return f"{self.BH_BET}{game_id}"
+
+    def parse_house_baccarat_new(self, custom_id: str) -> str | None:
+        return custom_id[len(self.BH_NEW) :] if custom_id.startswith(self.BH_NEW) else None
+
+    def parse_house_baccarat_bet(self, custom_id: str) -> str | None:
+        return custom_id[len(self.BH_BET) :] if custom_id.startswith(self.BH_BET) else None
+
+    def house_baccarat_player(self, game_id: str) -> str:
+        return f"{self.BH_PLAYER}{game_id}"
+
+    def house_baccarat_banker(self, game_id: str) -> str:
+        return f"{self.BH_BANKER}{game_id}"
+
+    def house_baccarat_tie(self, game_id: str) -> str:
+        return f"{self.BH_TIE}{game_id}"
+
+    def parse_house_baccarat_side(self, custom_id: str) -> BaccaratBetTarget | None:
+        mapping = (
+            (self.BH_PLAYER, BaccaratSide.PLAYER),
+            (self.BH_BANKER, BaccaratSide.BANKER),
+            (self.BH_TIE, BaccaratSide.TIE),
+        )
+        for prefix, side in mapping:
+            if custom_id.startswith(prefix):
+                game_id = custom_id[len(prefix) :]
+                if game_id:
+                    return BaccaratBetTarget(baccarat_id=game_id, side=side)
+        return None
+
+    def tower_tile(self, game_id: str, tile: int) -> str:
+        return f"{self.TW_TILE}{game_id}:{tile}"
+
+    def tower_cashout(self, game_id: str) -> str:
+        return f"{self.TW_CASH}{game_id}"
+
+    def tower_new(self, game_id: str) -> str:
+        return f"{self.TW_NEW}{game_id}"
+
+    def tower_bet(self, game_id: str) -> str:
+        return f"{self.TW_BET}{game_id}"
+
+    def parse_tower_tile(self, custom_id: str) -> MinesTileTarget | None:
+        if not custom_id.startswith(self.TW_TILE):
+            return None
+        remainder = custom_id[len(self.TW_TILE) :]
+        game_id, _, tile = remainder.rpartition(":")
+        if not game_id:
+            return None
+        try:
+            return MinesTileTarget(game_id=game_id, tile=int(tile))
+        except ValueError:
+            return None
+
+    def parse_tower_cashout(self, custom_id: str) -> str | None:
+        return custom_id[len(self.TW_CASH) :] if custom_id.startswith(self.TW_CASH) else None
+
+    def parse_tower_new(self, custom_id: str) -> str | None:
+        return custom_id[len(self.TW_NEW) :] if custom_id.startswith(self.TW_NEW) else None
+
+    def parse_tower_bet(self, custom_id: str) -> str | None:
+        return custom_id[len(self.TW_BET) :] if custom_id.startswith(self.TW_BET) else None
 
     def parse_history(self, custom_id: str) -> HistoryTarget | None:
         if not custom_id.startswith(self.HISTORY):

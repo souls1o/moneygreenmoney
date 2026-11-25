@@ -503,3 +503,83 @@ async def start_mines(
             if not posted:
                 await refund_failed_table(container, game_id)
             await interaction.followup.send(**errors.panel_for(exc).send_kwargs(ephemeral=True))
+
+
+async def start_baccarat(
+    interaction: discord.Interaction,
+    container: AppContainer,
+    embeds: EmbedFactory,
+    errors: DiscordErrorPresenter,
+    *,
+    user_id: str,
+    fiat: Decimal,
+) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    game_id: str | None = None
+    posted = False
+    with LogContext.bind(userId=user_id):
+        try:
+            game = await container.games.create_game(
+                player1_id=user_id,
+                fiat_amount=fiat,
+                side=CoinSide.HEADS,
+                game_type=GameType.BACCARAT,
+                guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+            )
+            game_id = game.game_id
+            from casino.discord_bot.bot import CasinoBot
+
+            bot = interaction.client
+            if not isinstance(bot, CasinoBot):
+                raise RuntimeError("Casino bot is not ready.")
+            refreshed = await bot.tables.provision_house_baccarat_interaction(game, interaction)
+            posted = True
+            await bot.tables.send_fairness_lock(interaction, refreshed)
+            if refreshed.status is GameStatus.COMPLETED:
+                await bot.tables.on_resolved(refreshed, interaction=interaction)
+        except Exception as exc:
+            if not posted:
+                await refund_failed_table(container, game_id)
+            await interaction.followup.send(**errors.panel_for(exc).send_kwargs(ephemeral=True))
+
+
+async def start_tower(
+    interaction: discord.Interaction,
+    container: AppContainer,
+    embeds: EmbedFactory,
+    errors: DiscordErrorPresenter,
+    *,
+    user_id: str,
+    fiat: Decimal,
+    difficulty: str,
+) -> None:
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+    game_id: str | None = None
+    posted = False
+    with LogContext.bind(userId=user_id):
+        try:
+            game = await container.games.create_game(
+                player1_id=user_id,
+                fiat_amount=fiat,
+                side=CoinSide.HEADS,
+                game_type=GameType.TOWER,
+                guild_id=str(interaction.guild_id) if interaction.guild_id else None,
+                tower_difficulty=difficulty,
+            )
+            game_id = game.game_id
+            from casino.discord_bot.bot import CasinoBot
+
+            bot = interaction.client
+            if not isinstance(bot, CasinoBot):
+                raise RuntimeError("Casino bot is not ready.")
+            refreshed = await bot.tables.provision_tower_interaction(game, interaction)
+            posted = True
+            await bot.tables.send_fairness_lock(interaction, refreshed)
+            if refreshed.status is GameStatus.COMPLETED:
+                await bot.tables.on_resolved(refreshed, interaction=interaction)
+        except Exception as exc:
+            if not posted:
+                await refund_failed_table(container, game_id)
+            await interaction.followup.send(**errors.panel_for(exc).send_kwargs(ephemeral=True))
