@@ -90,6 +90,23 @@ class SolanaDepositParser:
             raise IncompleteDepositTransaction(signature)
         return None
 
+    def balance_delta(self, payload: dict[str, Any], address: str) -> int | None:
+        payload = _unwrap_payload(payload)
+        meta = _meta(payload)
+        transaction = payload.get("transaction")
+        if not isinstance(transaction, dict):
+            transaction = {}
+        message = transaction.get("message")
+        if not isinstance(message, dict):
+            message = {}
+        keys = self._message_account_keys(message, meta)
+        index = _index_of(keys, _norm_pubkey(address) or address)
+        pre = _int_list(meta.get("preBalances") or meta.get("pre_balances"))
+        post = _int_list(meta.get("postBalances") or meta.get("post_balances"))
+        if index is None or index >= len(pre) or index >= len(post):
+            return None
+        return int(post[index]) - int(pre[index])
+
     def _message_account_keys(self, message: dict[str, Any], meta: dict[str, Any]) -> list[str]:
         keys = self._account_keys(
             message.get("accountKeys")

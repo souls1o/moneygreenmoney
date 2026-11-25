@@ -42,7 +42,6 @@ class DepositStreamWorker:
         self._req_id = 0
         self._ws = None
         self._sync_requested = asyncio.Event()
-        self._startup_recover_done = False
         self._logger = get_logger("casino.worker.deposit_stream")
 
     def request_sync(self) -> None:
@@ -156,9 +155,6 @@ class DepositStreamWorker:
             await self._sync_subscriptions()
 
     async def _recover_missed_on_connect(self) -> None:
-        if self._startup_recover_done:
-            return
-        self._startup_recover_done = True
         for target in list(self._targets.values()):
             if target.is_house:
                 continue

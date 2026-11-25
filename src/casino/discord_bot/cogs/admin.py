@@ -154,7 +154,40 @@ class AdminCog(commands.Cog):
             await send_panel(interaction, panel)
             panel.stop()
 
-    @app_commands.command(name="housestats", description="Show house balance, super wallet, and timeframe stats")
+    @app_commands.command(
+        name="credit_deposit",
+        description="Scan a member's deposit address and credit any missed on-chain deposit",
+    )
+    @app_commands.describe(member="Member who deposited but was not credited")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.allowed_installs(guilds=True, users=False)
+    @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+    async def credit_deposit(self, interaction: discord.Interaction, member: discord.Member) -> None:
+        await ack(interaction)
+        await self._guard(interaction)
+        with LogContext.bind(userId=str(member.id)):
+            user = await self._container.users.get_or_create(str(member.id))
+            credited = await self._container.deposits.reconcile_user(user.discord_id)
+            if credited is None:
+                await send_panel(
+                    interaction,
+                    self._embeds.error(
+                        "No uncredited deposit was found on that member's deposit address."
+                    ),
+                )
+                return
+            quote = await self._container.price.get_quote(allow_stale=True)
+            await send_panel(
+                interaction,
+                self._embeds.success(
+                    "Deposit credited",
+                    (
+                        f"{member.mention} now has "
+                        f"`{self._container.math.format_sol(credited.sol_balance)} SOL` "
+                        f"({self._container.math.format_fiat_symbol(self._container.math.sol_to_fiat(credited.sol_balance, quote.sol_price('USD')), 'USD')})."
+                    ),
+                ),
+            )
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def housestats(self, interaction: discord.Interaction) -> None:

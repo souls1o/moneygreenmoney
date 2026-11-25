@@ -20,7 +20,6 @@ from casino.solana_client.deposit_parser import (
     IncompleteDepositTransaction,
     ParsedIncomingTransfer,
     SolanaDepositParser,
-    same_pubkey,
 )
 from casino.solana_client.rpc import SolanaRpcGateway
 from casino.utils.text import TextNormalizer
@@ -271,45 +270,85 @@ class DepositService:
             leftover = int(await self._rpc.get_balance(target.address))
         except Exception:
             leftover = 0
-        for signature in signatures:
+        for signature in reversed(list(signatures)):
             existing = await self._transactions.find_by_signature(signature)
             if existing is not None:
                 continue
-            try:
-                swept = await self._incoming_or_pending(signature, super_addr)
-            except DepositTransactionPendingError:
+            payload = await self._payload_for_signature(signature)
+            if payload is None:
                 continue
-            if swept is None or not same_pubkey(swept.source, target.address):
+            player_delta = self._parser.balance_delta(payload, target.address)
+            super_delta = self._parser.balance_delta(payload, super_addr)
+            if player_delta is not None and player_delta > 0:
+                incoming = ParsedIncomingTransfer(
+                    signature=signature,
+                    lamports=player_delta,
+                    destination=target.address,
+                    source=None,
+                    memo=None,
+                )
+                try:
+                    credited = await self.credit_parsed(user, incoming)
+                except AlreadyProcessedError:
+                    return user
+                self._logger.info(
+                    "deposit_recovered_from_incoming",
+                    txSignature=signature,
+                    amountLamports=player_delta,
+                    userId=user.discord_id,
+                )
+                self._schedule_sweep(target)
+                return credited
+            swept_lamports = 0
+            if super_delta is not None and super_delta > 0 and (player_delta is None or player_delta < 0):
+                swept_lamports = super_delta
+            elif player_delta is not None and player_delta < 0:
+                swept_lamports = -player_delta
+            if swept_lamports <= 0:
                 continue
-            deposit_sig = signature
-            for other in reversed(signatures):
-                if other == signature:
-                    continue
-                if await self._transactions.find_by_signature(other) is None:
-                    deposit_sig = other
-                    break
             recovered = ParsedIncomingTransfer(
-                signature=deposit_sig,
-                lamports=max(int(swept.lamports) + max(leftover, 0), 0),
+                signature=signature,
+                lamports=max(int(swept_lamports) + max(leftover, 0), 0),
                 destination=target.address,
-                source=swept.source,
+                source=target.address,
                 memo=None,
             )
-            if recovered.amount.is_zero():
-                continue
             try:
                 credited = await self.credit_parsed(user, recovered)
             except AlreadyProcessedError:
                 return user
             self._logger.info(
                 "deposit_recovered_from_sweep",
-                txSignature=deposit_sig,
-                sweepSignature=signature,
+                txSignature=signature,
                 amountLamports=recovered.lamports,
                 userId=user.discord_id,
             )
-            self._schedule_sweep(target)
             return credited
+        return None
+
+    async def reconcile_user(self, discord_id: str) -> UserRecord | None:
+        user = await self._users.get(discord_id)
+        if user is None or not user.deposit_address:
+            return None
+        target = DepositWatchTarget(address=user.deposit_address, user_id=discord_id)
+        try:
+            signatures = await self._rpc.get_signatures(target.address, limit=25)
+        except TypeError:
+            signatures = await self._rpc.get_signatures(target.address)
+        for signature in reversed(list(signatures)):
+            try:
+                credited = await self.ingest_signature(signature, target)
+            except DepositTransactionPendingError:
+                continue
+            if credited is not None:
+                return credited
+        return await self.recover_swept_deposit(target)
+
+    async def _payload_for_signature(self, signature: str) -> dict | None:
+        for encoding in ("jsonParsed", "json"):
+            payload = await self._fetch_parsed_transaction(signature, encoding=encoding)
+            if payload is not None:
+                return payload
         return None
 
     def _is_internal_transfer(self, parsed: ParsedIncomingTransfer) -> bool:
