@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from decimal import Decimal
 
 from solana.rpc.commitment import Confirmed, Finalized, Processed
 
@@ -146,8 +147,12 @@ class DepositService:
 
         credited_amount = parsed.amount
 
-        quote = await self._prices.get_quote(allow_stale=True)
-        usd_price = quote.sol_price("USD")
+        usd_price = Decimal("0")
+        try:
+            quote = await self._prices.get_quote(allow_stale=True)
+            usd_price = quote.sol_price("USD")
+        except Exception:
+            self._logger.warning("deposit_credited_without_price", txSignature=parsed.signature)
         with LogContext.bind(userId=user.discord_id, txSignature=parsed.signature):
             try:
                 async with self._uow.begin() as uow:
@@ -260,6 +265,9 @@ class DepositService:
             signatures = await self._rpc.get_signatures(target.address, limit=25)
         except TypeError:
             signatures = await self._rpc.get_signatures(target.address)
+        except Exception:
+            self._logger.exception("recover_signatures_failed", address=target.address)
+            return None
         if not signatures:
             return None
         user = await self._users.get_by_deposit_address(target.address) or await self._users.get(target.user_id)
@@ -270,15 +278,20 @@ class DepositService:
             leftover = int(await self._rpc.get_balance(target.address))
         except Exception:
             leftover = 0
+        delta_fn = getattr(self._parser, "balance_delta", None)
         for signature in reversed(list(signatures)):
-            existing = await self._transactions.find_by_signature(signature)
-            if existing is not None:
+            try:
+                existing = await self._transactions.find_by_signature(signature)
+                if existing is not None:
+                    continue
+                payload = await self._payload_for_signature(signature)
+                if payload is None or delta_fn is None:
+                    continue
+                player_delta = delta_fn(payload, target.address)
+                super_delta = delta_fn(payload, super_addr)
+            except Exception:
+                self._logger.exception("recover_signature_failed", txSignature=signature)
                 continue
-            payload = await self._payload_for_signature(signature)
-            if payload is None:
-                continue
-            player_delta = self._parser.balance_delta(payload, target.address)
-            super_delta = self._parser.balance_delta(payload, super_addr)
             if player_delta is not None and player_delta > 0:
                 incoming = ParsedIncomingTransfer(
                     signature=signature,
@@ -291,6 +304,9 @@ class DepositService:
                     credited = await self.credit_parsed(user, incoming)
                 except AlreadyProcessedError:
                     return user
+                except Exception:
+                    self._logger.exception("recover_credit_incoming_failed", txSignature=signature)
+                    continue
                 self._logger.info(
                     "deposit_recovered_from_incoming",
                     txSignature=signature,
@@ -317,6 +333,9 @@ class DepositService:
                 credited = await self.credit_parsed(user, recovered)
             except AlreadyProcessedError:
                 return user
+            except Exception:
+                self._logger.exception("recover_credit_sweep_failed", txSignature=signature)
+                continue
             self._logger.info(
                 "deposit_recovered_from_sweep",
                 txSignature=signature,
@@ -335,10 +354,16 @@ class DepositService:
             signatures = await self._rpc.get_signatures(target.address, limit=25)
         except TypeError:
             signatures = await self._rpc.get_signatures(target.address)
+        except Exception as exc:
+            self._logger.exception("reconcile_signatures_failed", userId=discord_id)
+            raise DepositError(f"Could not load signatures for that deposit address: {exc}") from exc
         for signature in reversed(list(signatures)):
             try:
                 credited = await self.ingest_signature(signature, target)
             except DepositTransactionPendingError:
+                continue
+            except Exception:
+                self._logger.exception("reconcile_ingest_failed", txSignature=signature)
                 continue
             if credited is not None:
                 return credited
@@ -404,7 +429,12 @@ class DepositService:
             try:
                 return await self._rpc.get_parsed_transaction(signature, commitment=commitment)
             except TypeError:
-                return await self._rpc.get_parsed_transaction(signature)
+                try:
+                    return await self._rpc.get_parsed_transaction(signature)
+                except Exception:
+                    return None
+        except Exception:
+            return None
 
     def _schedule_sweep(self, target: DepositWatchTarget) -> None:
         self._spawn(self._safe_sweep(target), "deposit_sweep_failed", target.address)

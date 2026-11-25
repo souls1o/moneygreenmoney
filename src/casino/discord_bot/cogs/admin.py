@@ -11,7 +11,7 @@ from casino.discord_bot.presentation.embeds import EmbedFactory
 from casino.discord_bot.presentation.interactions import ack, send_panel
 from casino.domain.enums import GameType, GuildConfigSlot, UserRole
 from casino.domain.records import UserRecord
-from casino.logging.logger import LogContext
+from casino.logging.logger import LogContext, get_logger
 from casino.utils.money import SolAmount
 
 
@@ -164,30 +164,48 @@ class AdminCog(commands.Cog):
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def credit_deposit(self, interaction: discord.Interaction, member: discord.Member) -> None:
         await ack(interaction)
-        await self._guard(interaction)
-        with LogContext.bind(userId=str(member.id)):
-            user = await self._container.users.get_or_create(str(member.id))
-            credited = await self._container.deposits.reconcile_user(user.discord_id)
-            if credited is None:
+        try:
+            await self._guard(interaction)
+            with LogContext.bind(userId=str(member.id)):
+                user = await self._container.users.get_or_create(str(member.id))
+                credited = await self._container.deposits.reconcile_user(user.discord_id)
+                if credited is None:
+                    await send_panel(
+                        interaction,
+                        self._embeds.error(
+                            "No uncredited deposit was found on that member's deposit address."
+                        ),
+                    )
+                    return
+                quote = None
+                try:
+                    quote = await self._container.price.get_quote(allow_stale=True)
+                except Exception:
+                    quote = self._container.price.peek_cache()
+                usd = ""
+                if quote is not None:
+                    fiat = self._container.math.sol_to_fiat(
+                        credited.sol_balance, quote.sol_price("USD")
+                    )
+                    usd = f" ({self._container.math.format_fiat_symbol(fiat, 'USD')})"
                 await send_panel(
                     interaction,
-                    self._embeds.error(
-                        "No uncredited deposit was found on that member's deposit address."
+                    self._embeds.success(
+                        "Deposit credited",
+                        (
+                            f"{member.mention} now has "
+                            f"`{self._container.math.format_sol(credited.sol_balance)} SOL`{usd}."
+                        ),
                     ),
                 )
-                return
-            quote = await self._container.price.get_quote(allow_stale=True)
+        except Exception as exc:
+            get_logger(self.__class__.__name__).exception("credit_deposit_failed")
             await send_panel(
                 interaction,
-                self._embeds.success(
-                    "Deposit credited",
-                    (
-                        f"{member.mention} now has "
-                        f"`{self._container.math.format_sol(credited.sol_balance)} SOL` "
-                        f"({self._container.math.format_fiat_symbol(self._container.math.sol_to_fiat(credited.sol_balance, quote.sol_price('USD')), 'USD')})."
-                    ),
-                ),
+                self._embeds.error(f"Could not scan that deposit address: {exc}"),
             )
+
+    @app_commands.command(name="housestats", description="Show house balance, super wallet, and timeframe stats")
     @app_commands.allowed_installs(guilds=True, users=False)
     @app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
     async def housestats(self, interaction: discord.Interaction) -> None:

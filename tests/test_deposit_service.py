@@ -352,3 +352,74 @@ async def test_recover_credits_player_after_sweep_when_incoming_did_not_parse() 
     deposits = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.DEPOSIT]
     assert len(deposits) == 1
 
+
+@pytest.mark.asyncio
+async def test_credit_parsed_when_price_unavailable() -> None:
+    class BrokenPrice:
+        async def get_quote(self, *, allow_stale: bool = True):
+            raise RuntimeError("price down")
+
+    service, users_repo, _house, ledger_repo, _rpc, clock = _service()
+    service._prices = BrokenPrice()  # type: ignore[assignment]
+    user = UserRecord(
+        discord_id="1",
+        deposit_memo="BBTEST",
+        deposit_address="Player111111111111111111111111111111111111",
+        created_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    users_repo.users["1"] = user
+    parsed = ParsedIncomingTransfer(
+        signature="sig-noprice",
+        lamports=1_000_000,
+        destination=user.deposit_address or "",
+        source="s",
+        memo=None,
+    )
+    credited = await service.credit_parsed(user, parsed)
+    assert credited.sol_balance_lamports == 1_000_000
+    assert any(entry.type is LedgerEntryType.DEPOSIT for entry in ledger_repo.entries)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_credits_after_rpc_errors_on_incoming_sig() -> None:
+    service, users_repo, _house, ledger_repo, rpc, clock = _service()
+    user = UserRecord(
+        discord_id="1",
+        deposit_memo="BBTEST",
+        deposit_address="Player111111111111111111111111111111111111",
+        created_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    users_repo.users["1"] = user
+    sweep = {
+        "meta": {
+            "err": None,
+            "preBalances": [2_000_000_000, 1_000_000],
+            "postBalances": [5_000, 2_000_995_000],
+        },
+        "transaction": {
+            "message": {
+                "accountKeys": [user.deposit_address, rpc.super_address],
+                "instructions": [],
+            }
+        },
+    }
+
+    async def get_parsed_transaction(signature: str, **_kwargs):
+        if signature == "sig-deposit":
+            raise RuntimeError("helius timeout")
+        return sweep if signature == "sig-sweep" else None
+
+    async def get_signatures(_address: str | None = None, **_kwargs):
+        return ["sig-sweep", "sig-deposit"]
+
+    service._rpc.get_parsed_transaction = get_parsed_transaction  # type: ignore[method-assign]
+    service._rpc.get_signatures = get_signatures  # type: ignore[method-assign]
+    service._parser = SolanaDepositParser()
+    credited = await service.reconcile_user("1")
+    assert credited is not None
+    assert credited.sol_balance_lamports == 1_999_995_000
+    deposits = [entry for entry in ledger_repo.entries if entry.type is LedgerEntryType.DEPOSIT]
+    assert len(deposits) == 1
+
