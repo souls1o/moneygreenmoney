@@ -101,17 +101,24 @@ class DepositService:
             targets.append(DepositWatchTarget(address=address, user_id=user_id))
         return targets
 
-    async def ingest_signature(self, signature: str, target: DepositWatchTarget) -> UserRecord | None:
+    async def ingest_signature(
+        self,
+        signature: str,
+        target: DepositWatchTarget,
+        payload: dict | None = None,
+    ) -> UserRecord | None:
         existing = await self._transactions.find_by_signature(signature)
         if existing is not None:
             self._schedule_sweep(target)
             return None
-        try:
-            parsed = await self._incoming_or_pending(signature, target.address)
-        except DepositTransactionPendingError:
-            parsed = await self._incoming_from_balance_delta(signature, target.address)
-            if parsed is None:
-                raise
+        parsed = self._parse_incoming_payload(payload, signature, target.address) if payload else None
+        if parsed is None:
+            try:
+                parsed = await self._incoming_or_pending(signature, target.address)
+            except DepositTransactionPendingError:
+                parsed = await self._incoming_from_balance_delta(signature, target.address)
+                if parsed is None:
+                    raise
         if parsed is None:
             parsed = await self._incoming_from_balance_delta(signature, target.address)
         if parsed is None:
@@ -379,6 +386,36 @@ class DepositService:
             if credited is not None:
                 return credited
         return await self.recover_swept_deposit(target)
+
+    def _parse_incoming_payload(
+        self, payload: dict | None, signature: str, destination: str
+    ) -> ParsedIncomingTransfer | None:
+        if not isinstance(payload, dict):
+            return None
+        try:
+            parsed = self._parser.parse(payload, destination=destination, signature=signature)
+        except IncompleteDepositTransaction:
+            parsed = None
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            return parsed
+        delta_fn = getattr(self._parser, "balance_delta", None)
+        if delta_fn is None:
+            return None
+        try:
+            delta = delta_fn(payload, destination)
+        except Exception:
+            return None
+        if delta is None or int(delta) <= 0:
+            return None
+        return ParsedIncomingTransfer(
+            signature=signature,
+            lamports=int(delta),
+            destination=destination,
+            source=None,
+            memo=None,
+        )
 
     async def _incoming_from_balance_delta(
         self, signature: str, destination: str

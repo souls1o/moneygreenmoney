@@ -280,6 +280,39 @@ async def test_ingest_credits_from_balance_delta_when_parse_misses() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ingest_credits_from_websocket_payload_without_rpc() -> None:
+    service, users_repo, _house, ledger_repo, rpc, clock = _service()
+    user = UserRecord(
+        discord_id="1",
+        deposit_memo="BBTEST",
+        deposit_address="Player111111111111111111111111111111111111",
+        created_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    users_repo.users["1"] = user
+    payload = {
+        "transaction": {
+            "message": {"accountKeys": [user.deposit_address, "Sender1111111111111111111111111111111111111"]}
+        },
+        "meta": {"err": None, "preBalances": [0, 5_000_000], "postBalances": [1_250_000, 3_750_000]},
+    }
+
+    async def get_parsed_transaction(_signature: str, **_kwargs):
+        raise AssertionError("websocket payload should not fetch the transaction")
+
+    service._parser = SolanaDepositParser()
+    service._rpc.get_parsed_transaction = get_parsed_transaction  # type: ignore[method-assign]
+    credited = await service.ingest_signature(
+        "sig-ws",
+        DepositWatchTarget(address=user.deposit_address or "", user_id="1"),
+        payload=payload,
+    )
+    assert credited is not None
+    assert credited.sol_balance_lamports == 1_250_000
+    assert any(entry.type is LedgerEntryType.DEPOSIT for entry in ledger_repo.entries)
+
+
+@pytest.mark.asyncio
 async def test_ingest_does_not_sweep_uncredited_outgoing_signatures() -> None:
     service, users_repo, _house, _ledger, rpc, clock = _service()
     user = UserRecord(

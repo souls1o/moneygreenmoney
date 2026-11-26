@@ -81,7 +81,7 @@ class DepositMonitorWorker:
         cursor = await self._cursors.get(cursor_name)
         until = cursor.value if cursor else None
         if until is None:
-            await self._seed_cursor(cursor_name, target.address)
+            await self._catch_up_recent(target, cursor_name)
             await self._deposits.sweep_target(target)
             return
         newest_first = await self._signatures_after_cursor(target.address, until=until)
@@ -133,12 +133,44 @@ class DepositMonitorWorker:
         if caught_up:
             await self._deposits.sweep_target(target)
 
-    async def _seed_cursor(self, cursor_name: str, address: str) -> None:
-        infos = await self._signature_infos(address, limit=1)
+    async def _catch_up_recent(self, target: DepositWatchTarget, cursor_name: str) -> None:
+        infos = await self._signature_infos(target.address, limit=PAGE_SIZE)
         if not infos:
             return
-        await self._cursors.set(cursor_name, infos[0][0], self._clock.now())
-        self._logger.info("deposit_cursor_seeded", address=address, txSignature=infos[0][0])
+        min_ts = int(self._clock.now().timestamp()) - MAX_AUTO_CREDIT_AGE_SECONDS
+        recent: list[str] = []
+        for signature, block_time in infos:
+            if block_time is None:
+                continue
+            if int(block_time) < min_ts:
+                break
+            recent.append(signature)
+        last_complete: str | None = None
+        caught_up = True
+        for signature in reversed(recent):
+            try:
+                credited = await self._deposits.ingest_signature(signature, target)
+                last_complete = signature
+                if credited is not None:
+                    self._logger.info(
+                        "deposit_auto_credited",
+                        txSignature=signature,
+                        userId=credited.discord_id,
+                        address=target.address,
+                    )
+            except DepositTransactionPendingError:
+                caught_up = False
+                break
+            except Exception:
+                caught_up = False
+                self._logger.exception(
+                    "deposit_signature_failed", txSignature=signature, address=target.address
+                )
+                break
+        if last_complete is not None:
+            await self._cursors.set(cursor_name, last_complete, self._clock.now())
+        elif caught_up:
+            await self._cursors.set(cursor_name, infos[0][0], self._clock.now())
 
     async def _signatures_after_cursor(
         self, address: str, *, until: str

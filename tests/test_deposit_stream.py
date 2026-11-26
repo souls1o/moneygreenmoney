@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from casino.services.deposit_service import DepositWatchTarget
-from casino.solana_client.logs_subscribe import parse_logs_notification
+from casino.solana_client.logs_subscribe import parse_logs_notification, transaction_subscribe_params
 from casino.solana_client.websocket_url import websocket_url_from_rpc
 from casino.workers.deposit_stream_worker import DepositStreamWorker
 
@@ -57,8 +57,8 @@ async def test_stream_credits_mentioned_deposit_address() -> None:
     recovered = {"n": 0}
 
     class Deposits:
-        async def ingest_signature(self, signature: str, target: DepositWatchTarget):
-            ingested.append((signature, target.address))
+        async def ingest_signature(self, signature: str, target: DepositWatchTarget, payload=None):
+            ingested.append((signature, target.address, payload is not None))
             return None
 
         async def recover_swept_deposit(self, target: DepositWatchTarget):
@@ -80,7 +80,7 @@ async def test_stream_credits_mentioned_deposit_address() -> None:
     )
     assert note is not None
     await worker.handle_notification(note)
-    assert ingested == [("sig-dep", target.address)]
+    assert ingested == [("sig-dep", target.address, False)]
     assert recovered["n"] == 0
 
 
@@ -89,7 +89,7 @@ async def test_stream_ignores_failed_log() -> None:
     ingested: list[str] = []
 
     class Deposits:
-        async def ingest_signature(self, signature: str, target: DepositWatchTarget):
+        async def ingest_signature(self, signature: str, target: DepositWatchTarget, payload=None):
             ingested.append(signature)
             return None
 
@@ -118,3 +118,31 @@ def test_subscribe_payload_roundtrip_json() -> None:
     note = parse_logs_notification(json.loads(raw))
     assert note is not None
     assert note.subscription == 3
+
+
+def test_parse_transaction_notification_includes_payload() -> None:
+    note = parse_logs_notification(
+        {
+            "method": "transactionNotification",
+            "params": {
+                "subscription": 9,
+                "result": {
+                    "signature": "sig-tx",
+                    "transaction": {
+                        "transaction": {"message": {"accountKeys": ["Dep111"]}},
+                        "meta": {"err": None, "preBalances": [0], "postBalances": [1_000]},
+                    },
+                },
+            },
+        }
+    )
+    assert note is not None
+    assert note.signature == "sig-tx"
+    assert note.err is None
+    assert note.payload is not None
+
+
+def test_transaction_subscribe_params_include_account() -> None:
+    params = transaction_subscribe_params("Dep111", "processed")
+    assert params[0]["accountInclude"] == ["Dep111"]
+    assert params[1]["encoding"] == "jsonParsed"

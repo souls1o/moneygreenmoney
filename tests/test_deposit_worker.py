@@ -268,3 +268,31 @@ async def test_deposit_worker_skips_old_signatures() -> None:
     worker = DepositMonitorWorker(deposits, rpc, cursors, clock)  # type: ignore[arg-type]
     await worker.tick()
     assert ingested == ["sig-new"]
+
+
+@pytest.mark.asyncio
+async def test_deposit_worker_credits_recent_history_when_cursor_missing() -> None:
+    clock = FrozenClock()
+    ingested: list[str] = []
+
+    async def ingest_signature(signature, target, payload=None):
+        ingested.append(signature)
+        return None
+
+    deposits = SimpleNamespace(
+        watch_targets=AsyncMock(return_value=[DepositWatchTarget(address="addr1", user_id="1")]),
+        ingest_signature=ingest_signature,
+        sync_house_wallet=AsyncMock(return_value=None),
+        sweep_target=AsyncMock(return_value=None),
+    )
+    now = int(clock.now().timestamp())
+
+    async def get_signature_infos(*_args, **_kwargs):
+        return [("sig-fresh", now - 20), ("sig-ancient", now - 86_400)]
+
+    rpc = SimpleNamespace(is_configured=True, get_signature_infos=get_signature_infos)
+    cursors = SimpleNamespace(get=AsyncMock(return_value=None), set=AsyncMock())
+    worker = DepositMonitorWorker(deposits, rpc, cursors, clock)  # type: ignore[arg-type]
+    await worker.tick()
+    assert ingested == ["sig-fresh"]
+    cursors.set.assert_awaited()
