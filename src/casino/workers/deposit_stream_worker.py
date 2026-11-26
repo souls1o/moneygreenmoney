@@ -18,17 +18,17 @@ from casino.solana_client.logs_subscribe import (
     logs_subscribe_params,
     parse_logs_notification,
     subscription_id,
-    transaction_subscribe_params,
 )
 
 MAX_LOG_SUBSCRIPTIONS = 1_000
-SUBSCRIBE_REFRESH_SECONDS = 15.0
-INGEST_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.35, 0.5, 0.8, 1.2, 2.0)
-SLOW_RETRY_DELAYS = (3.0, 8.0, 15.0, 30.0, 45.0)
+SUBSCRIBE_REFRESH_SECONDS = 10.0
+# Confirmed notifications + confirmed getTransaction. Retry ~4s then a slow follow-up.
+INGEST_RETRY_DELAYS = (0.2, 0.3, 0.4, 0.5, 0.7, 1.0, 1.5)
+SLOW_RETRY_DELAYS = (3.0, 8.0, 15.0, 30.0)
 
 
 class DepositStreamWorker:
-    """Credit deposits from Solana websocket notifications."""
+    """One logsSubscribe per deposit address. Credit that signature only."""
 
     def __init__(
         self,
@@ -47,7 +47,6 @@ class DepositStreamWorker:
         self._jobs: set[asyncio.Task[None]] = set()
         self._req_id = 0
         self._ws = None
-        self._use_transaction_subscribe = True
         self._sync_requested = asyncio.Event()
         self._logger = get_logger("casino.worker.deposit_stream")
 
@@ -95,7 +94,13 @@ class DepositStreamWorker:
                 await asyncio.sleep(delay)
             except Exception as exc:
                 last_error = exc
-                await asyncio.sleep(min(delay, 0.25))
+                self._logger.warning(
+                    "deposit_stream_ingest_error",
+                    txSignature=notification.signature,
+                    address=target.address,
+                    error=str(exc),
+                )
+                await asyncio.sleep(min(delay, 0.4))
         if last_error is not None:
             self._logger.warning(
                 "deposit_stream_ingest_pending",
@@ -109,16 +114,7 @@ class DepositStreamWorker:
         for delay in SLOW_RETRY_DELAYS:
             await asyncio.sleep(delay)
             try:
-                await self._deposits.ingest_signature(
-                    notification.signature,
-                    target,
-                    payload=None,
-                )
-                self._logger.info(
-                    "deposit_stream_ingest_retry_ok",
-                    txSignature=notification.signature,
-                    address=target.address,
-                )
+                await self._deposits.ingest_signature(notification.signature, target)
                 return
             except DepositTransactionPendingError:
                 continue
@@ -126,7 +122,6 @@ class DepositStreamWorker:
                 self._logger.exception(
                     "deposit_stream_ingest_retry_failed",
                     txSignature=notification.signature,
-                    address=target.address,
                 )
                 return
         self._logger.warning(
@@ -206,15 +201,9 @@ class DepositStreamWorker:
         for address in list(self._sub_by_address):
             if address not in wanted:
                 await self._unsubscribe(address)
-        missing = [target for target in selected if target.address not in self._sub_by_address]
-        if missing:
-            first, *rest = missing
-            await self._subscribe(first.address)
-            if rest:
-                await asyncio.gather(
-                    *(self._subscribe(target.address) for target in rest),
-                    return_exceptions=True,
-                )
+        for target in selected:
+            if target.address not in self._sub_by_address:
+                await self._subscribe(target.address)
         if len(targets) > MAX_LOG_SUBSCRIPTIONS:
             self._logger.warning(
                 "deposit_stream_subscription_cap",
@@ -225,27 +214,10 @@ class DepositStreamWorker:
 
     async def _subscribe(self, address: str) -> None:
         try:
-            if self._use_transaction_subscribe:
-                result = await self._rpc(
-                    "transactionSubscribe", transaction_subscribe_params(address, "processed")
-                )
-            else:
-                result = await self._rpc("logsSubscribe", logs_subscribe_params(address, "processed"))
-        except Exception as exc:
-            detail = str(exc).lower()
-            if self._use_transaction_subscribe and (
-                "method not found" in detail or "invalid request" in detail or "unknown method" in detail
-            ):
-                self._use_transaction_subscribe = False
-                self._logger.warning("deposit_stream_transaction_subscribe_unavailable")
-                result = await self._rpc("logsSubscribe", logs_subscribe_params(address, "processed"))
-            else:
-                self._logger.warning("deposit_stream_subscribe_failed", address=address, error=str(exc))
-                return
-        try:
+            result = await self._rpc("logsSubscribe", logs_subscribe_params(address, "confirmed"))
             sub_id = subscription_id(result)
-        except (TypeError, ValueError):
-            self._logger.warning("deposit_stream_subscribe_bad_result", address=address, result=str(result))
+        except Exception as exc:
+            self._logger.warning("deposit_stream_subscribe_failed", address=address, error=str(exc))
             return
         self._sub_by_address[address] = sub_id
         self._address_by_sub[sub_id] = address
@@ -256,9 +228,8 @@ class DepositStreamWorker:
         if sub_id is None:
             return
         self._address_by_sub.pop(sub_id, None)
-        method = "transactionUnsubscribe" if self._use_transaction_subscribe else "logsUnsubscribe"
         try:
-            await self._rpc(method, [sub_id])
+            await self._rpc("logsUnsubscribe", [sub_id])
         except Exception:
             self._logger.warning("deposit_stream_unsubscribe_failed", address=address)
 

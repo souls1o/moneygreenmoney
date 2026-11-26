@@ -15,9 +15,9 @@ from casino.services.deposit_service import (
 from casino.solana_client.rpc import SolanaRpcGateway, SolanaRpcUnavailableError
 from casino.utils.clock import Clock
 
-RPC_BACKOFF = timedelta(seconds=60)
-MAX_AUTO_CREDIT_AGE_SECONDS = 30 * 60
-PAGE_SIZE = 20
+RPC_BACKOFF = timedelta(seconds=30)
+MAX_AUTO_CREDIT_AGE_SECONDS = 2 * 60 * 60
+PAGE_SIZE = 8
 
 
 def deposit_cursor_name(address: str) -> str:
@@ -80,69 +80,18 @@ class DepositMonitorWorker:
         cursor_name = deposit_cursor_name(target.address)
         cursor = await self._cursors.get(cursor_name)
         until = cursor.value if cursor else None
-        if until is None:
-            await self._catch_up_recent(target, cursor_name)
-            await self._deposits.sweep_target(target)
-            return
-        newest_first = await self._signatures_after_cursor(target.address, until=until)
-        last_complete: str | None = None
-        caught_up = True
-        min_ts = int(self._clock.now().timestamp()) - MAX_AUTO_CREDIT_AGE_SECONDS
-        recent: list[str] = []
-        skipped_old = False
-        for signature, block_time in newest_first:
-            if signature == until:
-                break
-            if block_time is not None and int(block_time) < min_ts:
-                skipped_old = True
-                if last_complete is None:
-                    last_complete = signature
-                continue
-            recent.append(signature)
-        if skipped_old and last_complete is not None and not recent:
-            await self._cursors.set(cursor_name, last_complete, self._clock.now())
-            await self._deposits.sweep_target(target)
-            return
-        for signature in reversed(recent):
-            try:
-                credited = await self._deposits.ingest_signature(signature, target)
-                last_complete = signature
-                if credited is not None:
-                    self._logger.info(
-                        "deposit_auto_credited",
-                        txSignature=signature,
-                        userId=credited.discord_id,
-                        address=target.address,
-                    )
-            except DepositTransactionPendingError:
-                caught_up = False
-                self._logger.info(
-                    "deposit_signature_pending",
-                    txSignature=signature,
-                    address=target.address,
-                )
-                break
-            except Exception:
-                caught_up = False
-                self._logger.exception(
-                    "deposit_signature_failed", txSignature=signature, address=target.address
-                )
-                break
-        if last_complete is not None:
-            await self._cursors.set(cursor_name, last_complete, self._clock.now())
-        if caught_up:
-            await self._deposits.sweep_target(target)
-
-    async def _catch_up_recent(self, target: DepositWatchTarget, cursor_name: str) -> None:
         infos = await self._signature_infos(target.address, limit=PAGE_SIZE)
         if not infos:
+            await self._deposits.sweep_target(target)
             return
         min_ts = int(self._clock.now().timestamp()) - MAX_AUTO_CREDIT_AGE_SECONDS
         recent: list[str] = []
         for signature, block_time in infos:
-            if block_time is None:
+            if until and signature == until:
+                break
+            if until is None and block_time is None:
                 continue
-            if int(block_time) < min_ts:
+            if block_time is not None and int(block_time) < min_ts:
                 break
             recent.append(signature)
         last_complete: str | None = None
@@ -169,13 +118,10 @@ class DepositMonitorWorker:
                 break
         if last_complete is not None:
             await self._cursors.set(cursor_name, last_complete, self._clock.now())
-        elif caught_up:
+        elif until is None:
             await self._cursors.set(cursor_name, infos[0][0], self._clock.now())
-
-    async def _signatures_after_cursor(
-        self, address: str, *, until: str
-    ) -> list[tuple[str, int | None]]:
-        return await self._signature_infos(address, until=until, limit=PAGE_SIZE)
+        if caught_up:
+            await self._deposits.sweep_target(target)
 
     async def _signature_infos(
         self,

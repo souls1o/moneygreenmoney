@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from casino.services.deposit_service import DepositWatchTarget
-from casino.solana_client.logs_subscribe import parse_logs_notification, transaction_subscribe_params
+from casino.solana_client.logs_subscribe import parse_logs_notification
 from casino.solana_client.websocket_url import websocket_url_from_rpc
 from casino.workers.deposit_stream_worker import DepositStreamWorker
 
@@ -142,7 +142,3 @@ def test_parse_transaction_notification_includes_payload() -> None:
     assert note.payload is not None
 
 
-def test_transaction_subscribe_params_include_account() -> None:
-    params = transaction_subscribe_params("Dep111", "processed")
-    assert params[0]["accountInclude"] == ["Dep111"]
-    assert params[1]["encoding"] == "jsonParsed"

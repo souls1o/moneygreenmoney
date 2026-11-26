@@ -485,11 +485,10 @@ class DepositService:
         return None
 
     async def _fetch_parsed_transaction(self, signature: str, *, encoding: str = "jsonParsed") -> dict | None:
-        for commitment in (Processed, Confirmed, Finalized):
-            payload = await self._rpc_parsed_transaction(signature, commitment, encoding)
-            if payload is not None:
-                return payload
-        return None
+        payload = await self._rpc_parsed_transaction(signature, Confirmed, encoding)
+        if payload is not None:
+            return payload
+        return await self._rpc_parsed_transaction(signature, Finalized, encoding)
 
     async def _rpc_parsed_transaction(self, signature: str, commitment, encoding: str) -> dict | None:
         try:

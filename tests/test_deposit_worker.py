@@ -258,7 +258,7 @@ async def test_deposit_worker_skips_old_signatures() -> None:
     now = int(clock.now().timestamp())
 
     async def get_signature_infos(*_args, **_kwargs):
-        return [("sig-old", now - 86_400), ("sig-new", now - 30)]
+        return [("sig-new", now - 30), ("sig-old", now - 86_400)]
 
     rpc = SimpleNamespace(is_configured=True, get_signature_infos=get_signature_infos)
     cursors = SimpleNamespace(
