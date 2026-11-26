@@ -245,6 +245,41 @@ async def test_ingest_waits_when_transaction_is_missing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ingest_credits_from_balance_delta_when_parse_misses() -> None:
+    service, users_repo, _house, ledger_repo, rpc, clock = _service()
+    user = UserRecord(
+        discord_id="1",
+        deposit_memo="BBTEST",
+        deposit_address="Player111111111111111111111111111111111111",
+        created_at=clock.now(),
+        updated_at=clock.now(),
+    )
+    users_repo.users["1"] = user
+
+    class DeltaOnlyParser:
+        def parse(self, _payload, *, destination: str, signature: str):
+            return None
+
+        def balance_delta(self, _payload, address: str) -> int:
+            return 2_500_000
+
+    async def get_parsed_transaction(_signature: str, **_kwargs):
+        return {"meta": {"err": None}}
+
+    service._parser = DeltaOnlyParser()  # type: ignore[assignment]
+    service._rpc.get_parsed_transaction = get_parsed_transaction  # type: ignore[method-assign]
+    credited = await service.ingest_signature(
+        "sig-delta",
+        DepositWatchTarget(address=user.deposit_address or "", user_id="1"),
+    )
+    assert credited is not None
+    assert credited.sol_balance_lamports == 2_500_000
+    assert any(entry.type is LedgerEntryType.DEPOSIT for entry in ledger_repo.entries)
+    await asyncio.gather(*list(service._sweep_tasks), return_exceptions=True)
+    assert rpc.swept == ["player-1"]
+
+
+@pytest.mark.asyncio
 async def test_ingest_does_not_sweep_uncredited_outgoing_signatures() -> None:
     service, users_repo, _house, _ledger, rpc, clock = _service()
     user = UserRecord(

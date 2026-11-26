@@ -105,9 +105,13 @@ class DepositStreamWorker:
             self._req_id = 0
             self._logger.info("deposit_stream_connected", url=_redact_ws_url(url))
             await self._sync_subscriptions()
-            await self._recover_missed_on_connect()
             reader = asyncio.create_task(self._read_loop(ws), name="deposit-stream-read")
             syncer = asyncio.create_task(self._sync_loop(), name="deposit-stream-sync")
+            recover = asyncio.create_task(
+                self._recover_missed_on_connect(), name="deposit-stream-recover"
+            )
+            self._jobs.add(recover)
+            recover.add_done_callback(self._jobs.discard)
             try:
                 done, pending = await asyncio.wait(
                     {reader, syncer},
@@ -155,19 +159,23 @@ class DepositStreamWorker:
             await self._sync_subscriptions()
 
     async def _recover_missed_on_connect(self) -> None:
-        for target in list(self._targets.values()):
-            if target.is_house:
-                continue
-            try:
-                recovered = await self._deposits.recover_swept_deposit(target)
-                if recovered is not None:
-                    self._logger.info(
-                        "deposit_recovered_on_connect",
-                        userId=recovered.discord_id,
-                        address=target.address,
-                    )
-            except Exception:
-                self._logger.exception("deposit_stream_recover_failed", address=target.address)
+        gate = asyncio.Semaphore(3)
+        targets = [target for target in self._targets.values() if not target.is_house]
+
+        async def recover_one(target: DepositWatchTarget) -> None:
+            async with gate:
+                try:
+                    recovered = await self._deposits.recover_swept_deposit(target)
+                    if recovered is not None:
+                        self._logger.info(
+                            "deposit_recovered_on_connect",
+                            userId=recovered.discord_id,
+                            address=target.address,
+                        )
+                except Exception:
+                    self._logger.exception("deposit_stream_recover_failed", address=target.address)
+
+        await asyncio.gather(*(recover_one(target) for target in targets), return_exceptions=True)
 
     async def _sync_subscriptions(self) -> None:
         targets = await self._deposits.watch_targets()

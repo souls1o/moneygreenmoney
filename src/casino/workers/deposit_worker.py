@@ -41,7 +41,7 @@ class DepositMonitorWorker:
         self._clock = clock
         self._cooldown_until = None
         self._rr_index = 0
-        self._wallets_per_tick = int(getattr(settings, "deposit_wallets_per_tick", 4) or 4)
+        self._wallets_per_tick = int(getattr(settings, "deposit_wallets_per_tick", 32) or 32)
         self._rpc_gap = float(getattr(settings, "deposit_rpc_gap_seconds", 0) or 0)
         self._logger = get_logger("casino.worker.deposits")
         self._house_sync_task: asyncio.Task[None] | None = None
@@ -113,7 +113,7 @@ class DepositMonitorWorker:
                     break
             if last_complete is not None:
                 await self._cursors.set(cursor_name, last_complete, self._clock.now())
-        if not target.is_house:
+        if not target.is_house and (oldest_first or not caught_up):
             recovered = await self._deposits.recover_swept_deposit(target)
             if recovered is not None:
                 self._logger.info(

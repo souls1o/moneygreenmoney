@@ -106,7 +106,14 @@ class DepositService:
         if existing is not None:
             self._schedule_sweep(target)
             return None
-        parsed = await self._incoming_or_pending(signature, target.address)
+        try:
+            parsed = await self._incoming_or_pending(signature, target.address)
+        except DepositTransactionPendingError:
+            parsed = await self._incoming_from_balance_delta(signature, target.address)
+            if parsed is None:
+                raise
+        if parsed is None:
+            parsed = await self._incoming_from_balance_delta(signature, target.address)
         if parsed is None:
             return None
         if target.is_house and self._is_internal_transfer(parsed):
@@ -279,12 +286,16 @@ class DepositService:
         except Exception:
             leftover = 0
         delta_fn = getattr(self._parser, "balance_delta", None)
+        fetched = 0
         for signature in reversed(list(signatures)):
             try:
                 existing = await self._transactions.find_by_signature(signature)
                 if existing is not None:
                     continue
+                if fetched >= 8:
+                    break
                 payload = await self._payload_for_signature(signature)
+                fetched += 1
                 if payload is None or delta_fn is None:
                     continue
                 player_delta = delta_fn(payload, target.address)
@@ -369,6 +380,29 @@ class DepositService:
                 return credited
         return await self.recover_swept_deposit(target)
 
+    async def _incoming_from_balance_delta(
+        self, signature: str, destination: str
+    ) -> ParsedIncomingTransfer | None:
+        delta_fn = getattr(self._parser, "balance_delta", None)
+        if delta_fn is None:
+            return None
+        payload = await self._payload_for_signature(signature)
+        if payload is None:
+            return None
+        try:
+            delta = delta_fn(payload, destination)
+        except Exception:
+            return None
+        if delta is None or int(delta) <= 0:
+            return None
+        return ParsedIncomingTransfer(
+            signature=signature,
+            lamports=int(delta),
+            destination=destination,
+            source=None,
+            memo=None,
+        )
+
     async def _payload_for_signature(self, signature: str) -> dict | None:
         for encoding in ("jsonParsed", "json"):
             payload = await self._fetch_parsed_transaction(signature, encoding=encoding)
@@ -414,7 +448,7 @@ class DepositService:
         return None
 
     async def _fetch_parsed_transaction(self, signature: str, *, encoding: str = "jsonParsed") -> dict | None:
-        for commitment in (Processed, Confirmed, Finalized):
+        for commitment in (Confirmed, Processed, Finalized):
             payload = await self._rpc_parsed_transaction(signature, commitment, encoding)
             if payload is not None:
                 return payload
