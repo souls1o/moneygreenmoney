@@ -16,14 +16,12 @@ from casino.solana_client.rpc import SolanaRpcGateway, SolanaRpcUnavailableError
 from casino.utils.clock import Clock
 
 RPC_BACKOFF = timedelta(seconds=60)
+MAX_AUTO_CREDIT_AGE_SECONDS = 30 * 60
+PAGE_SIZE = 20
 
 
 def deposit_cursor_name(address: str) -> str:
     return f"solana_deposit:{address}"
-
-
-PAGE_SIZE = 25
-MAX_PAGES = 8
 
 
 class DepositMonitorWorker:
@@ -82,60 +80,86 @@ class DepositMonitorWorker:
         cursor_name = deposit_cursor_name(target.address)
         cursor = await self._cursors.get(cursor_name)
         until = cursor.value if cursor else None
-        oldest_first = await self._signatures_oldest_first(target.address, until=until)
+        if until is None:
+            await self._seed_cursor(cursor_name, target.address)
+            await self._deposits.sweep_target(target)
+            return
+        newest_first = await self._signatures_after_cursor(target.address, until=until)
         last_complete: str | None = None
         caught_up = True
-        if oldest_first:
-            for signature in oldest_first:
-                try:
-                    credited = await self._deposits.ingest_signature(signature, target)
+        min_ts = int(self._clock.now().timestamp()) - MAX_AUTO_CREDIT_AGE_SECONDS
+        recent: list[str] = []
+        skipped_old = False
+        for signature, block_time in newest_first:
+            if signature == until:
+                break
+            if block_time is not None and int(block_time) < min_ts:
+                skipped_old = True
+                if last_complete is None:
                     last_complete = signature
-                    if credited is not None:
-                        self._logger.info(
-                            "deposit_auto_credited",
-                            txSignature=signature,
-                            userId=credited.discord_id,
-                            address=target.address,
-                        )
-                except DepositTransactionPendingError:
-                    caught_up = False
+                continue
+            recent.append(signature)
+        if skipped_old and last_complete is not None and not recent:
+            await self._cursors.set(cursor_name, last_complete, self._clock.now())
+            await self._deposits.sweep_target(target)
+            return
+        for signature in reversed(recent):
+            try:
+                credited = await self._deposits.ingest_signature(signature, target)
+                last_complete = signature
+                if credited is not None:
                     self._logger.info(
-                        "deposit_signature_pending",
+                        "deposit_auto_credited",
                         txSignature=signature,
+                        userId=credited.discord_id,
                         address=target.address,
                     )
-                    break
-                except Exception:
-                    caught_up = False
-                    self._logger.exception(
-                        "deposit_signature_failed", txSignature=signature, address=target.address
-                    )
-                    break
-            if last_complete is not None:
-                await self._cursors.set(cursor_name, last_complete, self._clock.now())
-        if not target.is_house and (oldest_first or not caught_up):
-            recovered = await self._deposits.recover_swept_deposit(target)
-            if recovered is not None:
+            except DepositTransactionPendingError:
+                caught_up = False
                 self._logger.info(
-                    "deposit_auto_credited",
-                    txSignature="recovered",
-                    userId=recovered.discord_id,
+                    "deposit_signature_pending",
+                    txSignature=signature,
                     address=target.address,
                 )
+                break
+            except Exception:
+                caught_up = False
+                self._logger.exception(
+                    "deposit_signature_failed", txSignature=signature, address=target.address
+                )
+                break
+        if last_complete is not None:
+            await self._cursors.set(cursor_name, last_complete, self._clock.now())
         if caught_up:
             await self._deposits.sweep_target(target)
 
-    async def _signatures_oldest_first(self, address: str, *, until: str | None) -> list[str]:
-        tip = await self._rpc.get_signatures(address, limit=PAGE_SIZE)
-        older = await self._collect_signatures(address, until=until) if until else []
-        seen: set[str] = set()
-        newest_first: list[str] = []
-        for signature in list(tip) + list(older):
-            if not signature or signature in seen:
-                continue
-            seen.add(signature)
-            newest_first.append(signature)
-        return list(reversed(newest_first))
+    async def _seed_cursor(self, cursor_name: str, address: str) -> None:
+        infos = await self._signature_infos(address, limit=1)
+        if not infos:
+            return
+        await self._cursors.set(cursor_name, infos[0][0], self._clock.now())
+        self._logger.info("deposit_cursor_seeded", address=address, txSignature=infos[0][0])
+
+    async def _signatures_after_cursor(
+        self, address: str, *, until: str
+    ) -> list[tuple[str, int | None]]:
+        return await self._signature_infos(address, until=until, limit=PAGE_SIZE)
+
+    async def _signature_infos(
+        self,
+        address: str,
+        *,
+        until: str | None = None,
+        before: str | None = None,
+        limit: int = PAGE_SIZE,
+    ) -> list[tuple[str, int | None]]:
+        getter = getattr(self._rpc, "get_signature_infos", None)
+        if getter is not None:
+            return list(await getter(address, until=until, before=before, limit=limit))
+        signatures = await self._rpc.get_signatures(
+            address, until=until, before=before, limit=limit
+        )
+        return [(signature, None) for signature in signatures]
 
     def _schedule_house_sync(self) -> None:
         if self._house_sync_task is not None and not self._house_sync_task.done():
@@ -147,18 +171,3 @@ class DepositMonitorWorker:
             await self._deposits.sync_house_wallet()
         except Exception:
             self._logger.exception("deposit_house_sync_failed")
-
-    async def _collect_signatures(self, address: str, *, until: str | None) -> list[str]:
-        newest_first: list[str] = []
-        before: str | None = None
-        for _ in range(MAX_PAGES):
-            page = await self._rpc.get_signatures(
-                address, until=until, before=before, limit=PAGE_SIZE
-            )
-            if not page:
-                break
-            newest_first.extend(page)
-            if len(page) < PAGE_SIZE:
-                break
-            before = page[-1]
-        return newest_first

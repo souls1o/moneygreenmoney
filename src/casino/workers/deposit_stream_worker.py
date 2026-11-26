@@ -18,7 +18,7 @@ from casino.solana_client.logs_subscribe import LogNotification, logs_subscribe_
 # Helius free: 1,000 subscriptions per WebSocket connection.
 MAX_LOG_SUBSCRIPTIONS = 1_000
 SUBSCRIBE_REFRESH_SECONDS = 2.0
-INGEST_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
+INGEST_RETRY_DELAYS = (0.05, 0.1, 0.15, 0.25, 0.4, 0.6, 1.0, 1.5)
 
 
 class DepositStreamWorker:
@@ -72,9 +72,7 @@ class DepositStreamWorker:
         last_error: Exception | None = None
         for attempt, delay in enumerate(INGEST_RETRY_DELAYS, start=1):
             try:
-                credited = await self._deposits.ingest_signature(notification.signature, target)
-                if credited is None and not target.is_house:
-                    await self._deposits.recover_swept_deposit(target)
+                await self._deposits.ingest_signature(notification.signature, target)
                 return
             except DepositTransactionPendingError as exc:
                 last_error = exc
@@ -89,11 +87,6 @@ class DepositStreamWorker:
                 address=address,
                 error=str(last_error),
             )
-            if not target.is_house:
-                try:
-                    await self._deposits.recover_swept_deposit(target)
-                except Exception:
-                    self._logger.exception("deposit_stream_recover_failed", address=address)
 
     async def _run_session(self) -> None:
         url = self._settings.resolved_solana_ws_url()
@@ -107,11 +100,6 @@ class DepositStreamWorker:
             await self._sync_subscriptions()
             reader = asyncio.create_task(self._read_loop(ws), name="deposit-stream-read")
             syncer = asyncio.create_task(self._sync_loop(), name="deposit-stream-sync")
-            recover = asyncio.create_task(
-                self._recover_missed_on_connect(), name="deposit-stream-recover"
-            )
-            self._jobs.add(recover)
-            recover.add_done_callback(self._jobs.discard)
             try:
                 done, pending = await asyncio.wait(
                     {reader, syncer},
@@ -157,25 +145,6 @@ class DepositStreamWorker:
                 pass
             self._sync_requested.clear()
             await self._sync_subscriptions()
-
-    async def _recover_missed_on_connect(self) -> None:
-        gate = asyncio.Semaphore(3)
-        targets = [target for target in self._targets.values() if not target.is_house]
-
-        async def recover_one(target: DepositWatchTarget) -> None:
-            async with gate:
-                try:
-                    recovered = await self._deposits.recover_swept_deposit(target)
-                    if recovered is not None:
-                        self._logger.info(
-                            "deposit_recovered_on_connect",
-                            userId=recovered.discord_id,
-                            address=target.address,
-                        )
-                except Exception:
-                    self._logger.exception("deposit_stream_recover_failed", address=target.address)
-
-        await asyncio.gather(*(recover_one(target) for target in targets), return_exceptions=True)
 
     async def _sync_subscriptions(self) -> None:
         targets = await self._deposits.watch_targets()

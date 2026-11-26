@@ -54,12 +54,15 @@ def test_parse_logs_notification_skips_failed_transactions() -> None:
 async def test_stream_credits_mentioned_deposit_address() -> None:
     ingested: list[tuple[str, str]] = []
 
+    recovered = {"n": 0}
+
     class Deposits:
         async def ingest_signature(self, signature: str, target: DepositWatchTarget):
             ingested.append((signature, target.address))
             return None
 
         async def recover_swept_deposit(self, target: DepositWatchTarget):
+            recovered["n"] += 1
             return None
 
     worker = DepositStreamWorker(Deposits(), SimpleNamespace(solana_commitment="confirmed"))  # type: ignore[arg-type]
@@ -78,6 +81,7 @@ async def test_stream_credits_mentioned_deposit_address() -> None:
     assert note is not None
     await worker.handle_notification(note)
     assert ingested == [("sig-dep", target.address)]
+    assert recovered["n"] == 0
 
 
 @pytest.mark.asyncio

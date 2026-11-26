@@ -236,14 +236,14 @@ class SolanaRpcGateway:
         response = await self.client.get_latest_blockhash()
         return response.value.blockhash
 
-    async def get_signatures(
+    async def get_signature_infos(
         self,
         address: str | None = None,
         *,
         until: str | None = None,
         before: str | None = None,
         limit: int = 25,
-    ) -> list[str]:
+    ) -> list[tuple[str, int | None]]:
         target = address or self.house_address or self.super_address
         if not target:
             return []
@@ -261,7 +261,29 @@ class SolanaRpcGateway:
             raise SolanaRpcUnavailableError(
                 f"Signature lookup returned {type(response).__name__} for {target}."
             )
-        return [str(getattr(item, "signature", item)) for item in items]
+        infos: list[tuple[str, int | None]] = []
+        for item in items:
+            signature = str(getattr(item, "signature", item))
+            block_time = getattr(item, "block_time", None)
+            if block_time is None:
+                block_time = getattr(item, "blockTime", None)
+            infos.append((signature, int(block_time) if block_time is not None else None))
+        return infos
+
+    async def get_signatures(
+        self,
+        address: str | None = None,
+        *,
+        until: str | None = None,
+        before: str | None = None,
+        limit: int = 25,
+    ) -> list[str]:
+        return [
+            signature
+            for signature, _block_time in await self.get_signature_infos(
+                address, until=until, before=before, limit=limit
+            )
+        ]
 
     async def get_parsed_transaction(
         self,
